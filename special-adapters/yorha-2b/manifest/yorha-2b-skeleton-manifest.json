@@ -1,0 +1,93 @@
+{
+  "schema": "owots-yorha-2b-skeleton-companion-v1",
+  "status": "candidate-unverified-runtime",
+  "source": {
+    "logicalPath": "natives/stm/art/model/character/ch0/ch001_00/90/ch001_00_90.fbxskel.7",
+    "bytes": 8594,
+    "sha256": "18e1eb5a76ed853187e708769263da7db8e7701d07d43d5fce3f2e86143c52fb",
+    "version": 7,
+    "boneCount": 93,
+    "provenance": "audited 2B source MOD, copied byte-for-byte per private variant"
+  },
+  "baseline": {
+    "logicalPath": "art/model/character/ch0/ch001_00/90/ch001_00_90.fbxskel",
+    "expectedJointCount": 93,
+    "holderType": "via.motion.FbxSkeletonResourceHolder"
+  },
+  "variants": [
+    {
+      "id": "yorha_2b_base_static",
+      "bodyPrefab": "mods/yorha_2b_base_static/b60902b0c9f97048/ch001_00_00_HQ.pfb",
+      "bodyCatalog": "mods/yorha_2b_base_static/c406cadd4073f518/playerbodypartslisthq_1st.user",
+      "headPrefab": "mods/yorha_2b_base_static/2670bb075a9de61f/ch001_00_10_HQ.pfb",
+      "headCatalog": "mods/yorha_2b_base_static/cf3fdf041f9fbd65/playerheadpartslisthq_1st.user",
+      "hairPrefab": "mods/yorha_2b_base_static/fa78e476fb9051c2/ch001_00_20_HQ.pfb",
+      "hairCatalog": "mods/yorha_2b_base_static/1f9bad298db57811/playerhairpartslisthq_1st.user",
+      "bodyMesh": "mods/yorha_2b_base_static/6beb535baea0379a/Vyaomo_V_00.mesh",
+      "privateRig": "mods/yorha_2b_base_static/dynamic/rig.fbxskel",
+      "privateRigFile": "natives/stm/mods/yorha_2b_base_static/dynamic/rig.fbxskel.7",
+      "bodyMeshSha256": "9c67d8bbd6e35eb641ffe9c9ca9ee0403dc8ad6187bc3c129d84c7253757c889"
+    },
+    {
+      "id": "yorha_2b_alternate_static",
+      "bodyPrefab": "mods/yorha_2b_alternate_static/8fabaa2952df9e4c/ch001_01_00_HQ.pfb",
+      "bodyCatalog": "mods/yorha_2b_alternate_static/c406cadd4073f518/playerbodypartslisthq_1st.user",
+      "headPrefab": "mods/yorha_2b_alternate_static/2670bb075a9de61f/ch001_00_10_HQ.pfb",
+      "headCatalog": "mods/yorha_2b_alternate_static/cf3fdf041f9fbd65/playerheadpartslisthq_1st.user",
+      "hairPrefab": "mods/yorha_2b_alternate_static/fa78e476fb9051c2/ch001_00_20_HQ.pfb",
+      "hairCatalog": "mods/yorha_2b_alternate_static/1f9bad298db57811/playerhairpartslisthq_1st.user",
+      "bodyMesh": "mods/yorha_2b_alternate_static/c481cc3b133cc376/Vyaomo_V_00.mesh",
+      "privateRig": "mods/yorha_2b_alternate_static/dynamic/rig.fbxskel",
+      "privateRigFile": "natives/stm/mods/yorha_2b_alternate_static/dynamic/rig.fbxskel.7",
+      "bodyMeshSha256": "9c67d8bbd6e35eb641ffe9c9ca9ee0403dc8ad6187bc3c129d84c7253757c889"
+    }
+  ],
+  "requiredJointNames": [
+    "root",
+    "COG",
+    "Hip",
+    "Spine_0",
+    "Spine_1",
+    "Spine_2",
+    "Chest_Mark",
+    "Neck_0",
+    "Neck_1",
+    "Head",
+    "L_Shoulder",
+    "L_UpperArm",
+    "L_Forearm",
+    "L_Hand",
+    "R_Shoulder",
+    "R_UpperArm",
+    "R_Forearm",
+    "R_Hand",
+    "L_Thigh",
+    "L_Knee",
+    "L_Shin",
+    "R_Thigh",
+    "R_Knee",
+    "R_Shin"
+  ],
+  "customBindPositionChecks": {
+    "COG": [0.0, 1.0199999809265137, 0.0],
+    "Hip": [0.0, 0.059999942779541016, 0.0],
+    "Spine_0": [0.0, -0.018999934196472168, 0.0],
+    "Spine_1": [0.0, 0.10000002384185791, 0.0],
+    "Spine_2": [0.0, 0.10224626958370209, -0.0031286869198083878],
+    "Neck_0": [0.0, 0.18826796114444733, -0.02067713439464569],
+    "L_UpperArm": [0.10052178800106049, -0.008498595096170902, -0.05425645783543587],
+    "R_UpperArm": [-0.10052178800106049, -0.008498595096170902, -0.05425645783543587]
+  },
+  "tolerances": {
+    "bindPositionMeters": 0.00002,
+    "holderPathCaseInsensitive": true,
+    "maxSettleFrames": 300
+  },
+  "runtimeRequirements": [
+    "The new OWOTS snapshot bridge must report ready=true, exact parts and a live supporter/entity address.",
+    "The actual controlling actor root must own exactly one DummySkeleton and one Motion component.",
+    "The BODY GameObject must be an actor descendant and expose the exact variant body mesh path.",
+    "The source rig must load as via.motion.FbxSkeletonResource with a FbxSkeletonResourceHolder.",
+    "The runtime must rebuild a 93-joint Motion graph before the adapter reports active."
+  ]
+}

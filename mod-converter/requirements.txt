@@ -1,0 +1,2 @@
+# Optional for the source/CLI build. The distributed Windows EXE bundles it.
+zstandard>=0.22.0

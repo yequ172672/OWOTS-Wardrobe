@@ -1,0 +1,83 @@
+{
+  "upstream": "https://github.com/NSACloud/RE-Mesh-Editor",
+  "fork": "https://github.com/yequ172672/RE-Mesh-Editor-5.2-CN",
+  "revision": "87cd81e40a7268b8e3ec73f07f00b0afe60ca3ff",
+  "license": "GPL-3.0; source and license included",
+  "files": [
+    {
+      "source": "RE-Mesh-Editor-main/modules/gen_functions.py",
+      "destination": "owots_vendor/gen_functions.py",
+      "sourceSha256": "c7cecab5761b2fa9e40e1bcaa93d7458281bb2627176f6f048bc3c2fd27c59c2",
+      "sha256": "995722a573276bad3335d6dc16d94572d8bde7c4932c4cadc4def302c80cffbc",
+      "changes": [
+        "Removed import-time os.system(color) console side effect"
+      ]
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/hashing/mmh3/pymmh3.py",
+      "destination": "owots_vendor/hashing/mmh3/pymmh3.py",
+      "sourceSha256": "74c01f5ba5e674b8be59e15ea5ac1e60d979bdd02436dc753bee702969411330",
+      "sha256": "74c01f5ba5e674b8be59e15ea5ac1e60d979bdd02436dc753bee702969411330",
+      "changes": []
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/mdf/file_re_mdf.py",
+      "destination": "owots_vendor/mdf/file_re_mdf.py",
+      "sourceSha256": "d85b989378217492e6700f93987d54ae49332ebf2a95659af67e1d0bae36e942",
+      "sha256": "d85b989378217492e6700f93987d54ae49332ebf2a95659af67e1d0bae36e942",
+      "changes": []
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/workspace/appearance_project.py",
+      "destination": "owots_vendor/workspace/appearance_project.py",
+      "sourceSha256": "d870994276a5a2ee957e7ac7f13826648efec9fe587b7af550e60f11af73064d",
+      "sha256": "d870994276a5a2ee957e7ac7f13826648efec9fe587b7af550e60f11af73064d",
+      "changes": []
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/workspace/appearance_mdf.py",
+      "destination": "owots_vendor/workspace/appearance_mdf.py",
+      "sourceSha256": "a4f1770e65fff1a81703e80235b39b881b118b2e0b686d1a43b2503ff46dd471",
+      "sha256": "a4f1770e65fff1a81703e80235b39b881b118b2e0b686d1a43b2503ff46dd471",
+      "changes": []
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/workspace/appearance_catalog.py",
+      "destination": "owots_vendor/workspace/appearance_catalog.py",
+      "sourceSha256": "21a7de5cce4acc6f09ff84c04ce55476252acab4d3b6828e08b41dfb48d3b915",
+      "sha256": "21a7de5cce4acc6f09ff84c04ce55476252acab4d3b6828e08b41dfb48d3b915",
+      "changes": []
+    },
+    {
+      "source": "RE-Mesh-Editor-main/modules/workspace/appearance_resources.py",
+      "destination": "owots_vendor/workspace/appearance_resources.py",
+      "sourceSha256": "e68dad26b637b01a89c3dc1373c606ffdc671a55d5c5962d785dd5fde7b55317",
+      "sha256": "e68dad26b637b01a89c3dc1373c606ffdc671a55d5c5962d785dd5fde7b55317",
+      "changes": []
+    },
+    {
+      "source": "RE-Asset-Library-cn/modules/pak/file_re_pak.py",
+      "destination": "owots_vendor/pak/file_re_pak.py",
+      "sourceSha256": "05f6869e14461c09c27848ac9a882ada2dc163a654ac0dc1a4366bf7b16bbc2d",
+      "sha256": "05f6869e14461c09c27848ac9a882ada2dc163a654ac0dc1a4366bf7b16bbc2d",
+      "changes": []
+    },
+    {
+      "source": "RE-Asset-Library-cn/modules/encryption/re_pak_encryption.py",
+      "destination": "owots_vendor/encryption/re_pak_encryption.py",
+      "sourceSha256": "5edb679d7956a15f1ac1361b4328796c3edc40f6d35d562335e30d4c3f7cb56d",
+      "sha256": "5edb679d7956a15f1ac1361b4328796c3edc40f6d35d562335e30d4c3f7cb56d",
+      "changes": []
+    },
+    {
+      "source": "RE-Asset-Library-cn/modules/pak/re_pak_utils.py",
+      "destination": "owots_vendor/pak/entry_reader.py",
+      "sourceSha256": "14958dcdd909a74728bb31eb1c63d17294a3928ec838b5adc4d68f0754b60883",
+      "sha256": "4b78ac0781cd89920ae8c215e50099bc572eef6e59d4bfbfa2d5839b6ab045ac",
+      "changes": [
+        "Extracted four reader definitions verbatim; imports reduced to dependencies"
+      ]
+    }
+  ],
+  "pakUpstream": "https://github.com/NSACloud/RE-Asset-Library"
+}

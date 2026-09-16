@@ -1,0 +1,4 @@
+interface:
+  display_name: "OWOTS MOD 转换助手"
+  short_description: "查找游戏目录、转换普通 MOD，并为脚本类特殊 MOD 建立专用适配流程"
+  default_prompt: "使用 $owots-mod-conversion 查找我的游戏目录，并帮我把提供的 MOD 转换为衣橱测试包。"

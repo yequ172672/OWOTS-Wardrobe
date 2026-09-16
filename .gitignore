@@ -1,0 +1,13 @@
+bin/
+obj/
+*.zip
+*.user
+.vs/
+*.suo
+
+__pycache__/
+*.pyc
+
+# Reproducible converter worker binaries and game-format metadata are packaged
+# by mod-converter/prepare_dependencies.py, not stored as generated build output.
+/mod-converter/runtime/

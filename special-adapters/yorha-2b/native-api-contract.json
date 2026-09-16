@@ -1,0 +1,75 @@
+{
+  "schema": "owots-yorha-2b-native-api-contract-v1",
+  "build": "OWOTS STM current REFramework candidate; method RVAs are checked as one image-relative set",
+  "scope": "read current controlling actor and BODY mesh; write one root DummySkeleton SkeletonResourceHandle",
+  "types": {
+    "ace.GAElement`1<app.PlayerManager>": 437989116,
+    "app.PlayerManager": 346041440,
+    "app.cPlayerManageInfo": 3185740719,
+    "app.cPlayerCharacterEntity": 4067958465,
+    "app.cPlayerGameObjectSupporter": 1646483854,
+    "via.Component": 1881844667,
+    "via.GameObject": 4065074914,
+    "via.Transform": 1340992935,
+    "via.render.Mesh": 1829138609,
+    "via.ResourceHolder": 1072471267,
+    "via.motion.DummySkeleton": 2062619527,
+    "via.motion.Motion": 1638522585,
+    "via.Joint": 1272281384,
+    "via.Application": 1896701499,
+    "System.Array": 58605515
+  },
+  "methods": [
+    {"key":"pm_instance","type":"ace.GAElement`1<app.PlayerManager>","name":"get_Instance","params":[],"returns":"app.PlayerManager","static":true,"rva":109939872,"mutates":false},
+    {"key":"pm_info","type":"app.PlayerManager","name":"getControllingPlayer","params":[],"returns":"app.cPlayerManageInfo","static":false,"rva":77873440,"mutates":false},
+    {"key":"pm_current","type":"app.PlayerManager","name":"isControllingPlayer","params":["via.GameObject"],"returns":"System.Boolean","static":false,"rva":111298048,"mutates":false},
+    {"key":"info_valid","type":"app.cPlayerManageInfo","name":"get_Valid","params":[],"returns":"System.Boolean","static":false,"rva":125839200,"mutates":false},
+    {"key":"info_object","type":"app.cPlayerManageInfo","name":"get_Object","params":[],"returns":"via.GameObject","static":false,"rva":86045520,"mutates":false},
+    {"key":"info_entity","type":"app.cPlayerManageInfo","name":"get_CharacterEntity","params":[],"returns":"app.cPlayerCharacterEntity","static":false,"rva":94387552,"mutates":false},
+    {"key":"entity_supporter","type":"app.cPlayerCharacterEntity","name":"get_GameObjectSupporter","params":[],"returns":"app.cPlayerGameObjectSupporter","static":false,"rva":108612672,"mutates":false},
+    {"key":"supporter_body_type","type":"app.cPlayerGameObjectSupporter","name":"convertObjTypeToPartsType","params":["app.PlayerPartsDef.PARTS_TYPE"],"returns":"app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT","static":true,"rva":11360992,"mutates":false},
+    {"key":"supporter_body","type":"app.cPlayerGameObjectSupporter","name":"getGameObject","params":["app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT"],"returns":"via.GameObject","static":false,"rva":3268272,"mutates":false},
+    {"key":"component_game_object","type":"via.Component","name":"get_GameObject","params":[],"returns":"via.GameObject","static":false,"rva":94821856,"mutates":false},
+    {"key":"component_valid","type":"via.Component","name":"get_Valid","params":[],"returns":"System.Boolean","static":false,"rva":94763376,"mutates":false},
+    {"key":"game_object_valid","type":"via.GameObject","name":"get_Valid","params":[],"returns":"System.Boolean","static":false,"rva":94806192,"mutates":false},
+    {"key":"game_object_transform","type":"via.GameObject","name":"get_Transform","params":[],"returns":"via.Transform","static":false,"rva":97957552,"mutates":false},
+    {"key":"game_object_components","type":"via.GameObject","name":"get_Components","params":[],"returns":"via.Component[]","static":false,"rva":97957600,"mutates":false},
+    {"key":"transform_parent","type":"via.Transform","name":"get_Parent","params":[],"returns":"via.Transform","static":false,"rva":125570976,"mutates":false},
+    {"key":"transform_joints","type":"via.Transform","name":"get_Joints","params":[],"returns":"via.Joint[]","static":false,"rva":125571280,"mutates":false},
+    {"key":"array_length","type":"System.Array","name":"GetLength","params":["System.Int32"],"returns":"System.Int32","static":false,"rva":114447776,"mutates":false},
+    {"key":"array_value","type":"System.Array","name":"GetValue","params":["System.Int32"],"returns":"System.Object","static":false,"rva":114447856,"mutates":false},
+    {"key":"mesh_ready","type":"via.render.Mesh","name":"get_MeshReady","params":[],"returns":"System.Boolean","static":false,"rva":122191152,"mutates":false},
+    {"key":"mesh_holder","type":"via.render.Mesh","name":"getMesh","params":[],"returns":"via.render.MeshResourceHolder","static":false,"rva":122190144,"mutates":false},
+    {"key":"resource_path","type":"via.ResourceHolder","name":"get_ResourcePath","params":[],"returns":"System.String","static":false,"rva":116635664,"mutates":false},
+    {"key":"skeleton_get","type":"via.motion.DummySkeleton","name":"get_SkeletonResourceHandle","params":[],"returns":"via.motion.SkeletonResourceHolder","static":false,"rva":113281056,"mutates":false},
+    {"key":"skeleton_set","type":"via.motion.DummySkeleton","name":"set_SkeletonResourceHandle","params":["via.motion.SkeletonResourceHolder"],"returns":"System.Void","static":false,"rva":113281152,"mutates":true},
+    {"key":"motion_constructed","type":"via.motion.Motion","name":"get_JointsConstructed","params":[],"returns":"System.Boolean","static":false,"rva":99057168,"mutates":false},
+    {"key":"joint_valid","type":"via.Joint","name":"get_Valid","params":[],"returns":"System.Boolean","static":false,"rva":94763376,"mutates":false},
+    {"key":"joint_name","type":"via.Joint","name":"get_Name","params":[],"returns":"System.String","static":false,"rva":109358608,"mutates":false},
+    {"key":"joint_owner","type":"via.Joint","name":"get_Owner","params":[],"returns":"via.Transform","static":false,"rva":109360928,"mutates":false},
+    {"key":"joint_base_position","type":"via.Joint","name":"get_BaseLocalPosition","params":[],"returns":"via.vec3","static":false,"rva":109360528,"mutates":false},
+    {"key":"frame","type":"via.Application","name":"get_FrameCount","params":[],"returns":"System.UInt32","static":true,"rva":127698480,"mutates":false}
+  ],
+  "resourceConstruction": {
+    "create": "sdk.create_resource('via.motion.FbxSkeletonResource', privateLogicalPath)",
+    "holder": "resource:create_holder('via.motion.FbxSkeletonResourceHolder')",
+    "expectedHolderBase": "via.motion.SkeletonResourceHolder",
+    "setter": "via.motion.DummySkeleton.set_SkeletonResourceHandle(via.motion.SkeletonResourceHolder)",
+    "referencePolicy": "add_ref raw resource, holder, and original holder before the setter; release only after verified restoration"
+  },
+  "threading": {
+    "nativeReadAndWriteCallback": "UpdateMotion",
+    "uiAndScriptResetPolicy": "status and mode/restore requests are scalar/queued; no managed getter or holder setter",
+    "arrayLifetime": "Component[] and Joint[] wrappers are add_ref-pinned only during synchronous traversal and are never retained across frames"
+  },
+  "evidence": [
+    "_validation/2b-skeleton-diagnosis-20260915/game-actor-binding-audit.json",
+    "_validation/2b-skeleton-diagnosis-20260915/actor-binding-findings.md",
+    "special-adapters/scarlet/src/scarlet_manual_adapter.lua (existing holder swap path)"
+  ],
+  "limitations": [
+    "The method set and image-relative RVAs are validated against the current candidate build at runtime; mismatch fails closed.",
+    "No runtime game A/B has been run for 2B yet.",
+    "The adapter does not retarget animation or repair cloth/chain constraints."
+  ]
+}

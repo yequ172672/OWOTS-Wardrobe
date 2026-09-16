@@ -1,0 +1,3 @@
+The OWOTS appearance integration and its generated single-source plugin are distributed under the MIT License.
+
+See `LICENSE-RE-Engine-MCP.txt` for the complete license text and the repository/source commit recorded in `release-manifest.json`.

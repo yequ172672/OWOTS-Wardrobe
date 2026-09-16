@@ -1,0 +1,862 @@
+{
+  "schema": "scarlet-dynamic-dependencies-v1",
+  "sourcePackage": "Scarlet-Model-1.1.0",
+  "sourceAdapterSha256": "B280101CDEC954F73EACE41527379500E6367504644F775B72291FC2A160A272",
+  "originalAuthor": "Little1113",
+  "liveTested": false,
+  "selectionIds": [
+    "scarlet_hat_static",
+    "scarlet_no_hat_static"
+  ],
+  "requiredPrivateNamespace": "mods/{id}/dynamic/",
+  "sharedGameReferences": [
+    "Motion/Common/Variable/CharacterCommonVariable.uvar",
+    "Motion/Common/Variable/CharacterFaceCommonVariable.uvar"
+  ],
+  "variants": {
+    "scarlet_hat_static": {
+      "pathMapEntryCount": 120,
+      "files": [
+        {
+          "source": "art/mods/scarlet/f5a699cc7.motbank",
+          "target": "mods/scarlet_hat_static/a14d70827a9d7fdd/f5a699cc7.motbank",
+          "bytes": 5122,
+          "sourceSha256": "5a699cc7838688e6a20dccd0200e0a34ac8a65180bd73aab2e4cd26c2900539a",
+          "sha256": "d8cbed823f4182b87f1e1a19ca293e1add30814fe99472d65bf5359b81154ce2",
+          "references": [
+            "Motion/Common/Variable/CharacterFaceCommonVariable.uvar",
+            "",
+            "mods/scarlet_hat_static/dynamic/motions/m007.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m008.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m006.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m011.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m010.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m017.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m019.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m018.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m016.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m013.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m014.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m012.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m009.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m020.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m015.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m021.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_aaa.user",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_aaa.user",
+          "bytes": 516,
+          "sourceSha256": "a7f22848c0d47372fd1c0f6a25c9e1236a718e15c2be71ddbed4d9ecf411bfe6",
+          "sha256": "a7f22848c0d47372fd1c0f6a25c9e1236a718e15c2be71ddbed4d9ecf411bfe6",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_common.motbank",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_common.motbank",
+          "bytes": 1746,
+          "sourceSha256": "393b681d015319d082e58cc43b301dfa00c99a68aa4d315121f9579f0224ec18",
+          "sha256": "e8dbaa7d18c48edf690ddde537e22f34c1706010944e8e6d6fd4dce7dd7da1e7",
+          "references": [
+            "Motion/Common/Variable/CharacterCommonVariable.uvar",
+            "",
+            "mods/scarlet_hat_static/dynamic/motions/m003.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m001.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m002.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m000.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m004.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_designchange.motbank",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_designchange.motbank",
+          "bytes": 346,
+          "sourceSha256": "2c4c8de8a3591e42e3f4cdfbf0679dd3a04351bd9d87bfb9e50f98cfb350f8b4",
+          "sha256": "cfb2ee9c793dd536748e603b44ff50ffc742f3060bc124f6323cc1baa87901f9",
+          "references": [
+            "",
+            "",
+            "mods/scarlet_hat_static/dynamic/motions/m005.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_sheath.user",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_sheath.user",
+          "bytes": 1228,
+          "sourceSha256": "cbcceaba11c152cfc36e5715befa7a81b12491c965df5389b3db22c54774b4d0",
+          "sha256": "cbcceaba11c152cfc36e5715befa7a81b12491c965df5389b3db22c54774b4d0",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_visual.user",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_visual.user",
+          "bytes": 4592,
+          "sourceSha256": "6c352cd695d4502433d17b3c6f41d9f7e145256a28510a1fe067890c99b5743b",
+          "sha256": "6c352cd695d4502433d17b3c6f41d9f7e145256a28510a1fe067890c99b5743b",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_weapon.motbank",
+          "target": "mods/scarlet_hat_static/dynamic/scarlet_weapon.motbank",
+          "bytes": 4626,
+          "sourceSha256": "40f5d0e73b09e47bb4a4aebd9e40d1c554d52b2ea5ea8460463885c949057837",
+          "sha256": "a90c944ad32c32fe3cb9046b1de9b2378b5ba82da5bf741349c9319c2be4d85e",
+          "references": [
+            "Motion/Common/Variable/CharacterCommonVariable.uvar",
+            "",
+            "mods/scarlet_hat_static/dynamic/motions/m028.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m032.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m025.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m029.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m027.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m031.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m023.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m024.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m033.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m034.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m022.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m026.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m030.motlist",
+            "mods/scarlet_hat_static/dynamic/motions/m035.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/p/empty_chain_1378acd141f77147f46804b4fa4.chain2",
+          "target": "mods/scarlet_hat_static/dynamic/chain_2.chain2",
+          "bytes": 480,
+          "sourceSha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "sha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/p/empty_chain_188ce7286fa25651.chain2",
+          "target": "mods/scarlet_hat_static/dynamic/chain_0.chain2",
+          "bytes": 480,
+          "sourceSha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "sha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/p/rig_dd9ab81db072df9531fbfe9d.fbxskel",
+          "target": "mods/scarlet_hat_static/dynamic/rig.fbxskel",
+          "bytes": 25946,
+          "sourceSha256": "f609544e9a16906f7d41a708e5b699bcb4451431c2d1cbcb0e19b4bd94d2f19b",
+          "sha256": "f609544e9a16906f7d41a708e5b699bcb4451431c2d1cbcb0e19b4bd94d2f19b",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m000.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m000.motlist",
+          "bytes": 13847412,
+          "sourceSha256": "9567a1bb4c98037e3789484d97141df799b68adb1a2dcb4fd7bacb2fb0bfbdf7",
+          "sha256": "9567a1bb4c98037e3789484d97141df799b68adb1a2dcb4fd7bacb2fb0bfbdf7",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m001.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m001.motlist",
+          "bytes": 13157092,
+          "sourceSha256": "2ad0c302721ad67650358a8f9e8ac26db5596f7f3053739995a828c354441bbf",
+          "sha256": "2ad0c302721ad67650358a8f9e8ac26db5596f7f3053739995a828c354441bbf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m002.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m002.motlist",
+          "bytes": 8714760,
+          "sourceSha256": "a4a2413beea26a219f3572d5078133e38235b2e4579a3b979c5c3f094f212c65",
+          "sha256": "a4a2413beea26a219f3572d5078133e38235b2e4579a3b979c5c3f094f212c65",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m003.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m003.motlist",
+          "bytes": 26452484,
+          "sourceSha256": "76ebc4bb92b7e6eb8de3becf803b95360e1847444e5a34dc07e4bab641c17ebb",
+          "sha256": "76ebc4bb92b7e6eb8de3becf803b95360e1847444e5a34dc07e4bab641c17ebb",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m004.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m004.motlist",
+          "bytes": 53200,
+          "sourceSha256": "269606997bdb861e9bdf32ae28a21bc58d162103eefabfb1579fb584d4382040",
+          "sha256": "269606997bdb861e9bdf32ae28a21bc58d162103eefabfb1579fb584d4382040",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m005.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m005.motlist",
+          "bytes": 4590088,
+          "sourceSha256": "aa9df665bc4dec43d5e970b4cfbbea8ceaf6a650c6ed6b368808312704359227",
+          "sha256": "aa9df665bc4dec43d5e970b4cfbbea8ceaf6a650c6ed6b368808312704359227",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m006.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m006.motlist",
+          "bytes": 181768,
+          "sourceSha256": "7f41d6dbfa8a2d0d6e849b469cf3a2d21577590ebddd870c2733f5f9e2f3f390",
+          "sha256": "7f41d6dbfa8a2d0d6e849b469cf3a2d21577590ebddd870c2733f5f9e2f3f390",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m007.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m007.motlist",
+          "bytes": 2528,
+          "sourceSha256": "395c4ce44f57bdcd5ef20f0e6d15bed0c62df54815635c9733db434d5cedf553",
+          "sha256": "395c4ce44f57bdcd5ef20f0e6d15bed0c62df54815635c9733db434d5cedf553",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m008.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m008.motlist",
+          "bytes": 390968,
+          "sourceSha256": "450994cf1bea8328468d3885b83d866b4b2f9972c8944f387106bf22d166bbed",
+          "sha256": "450994cf1bea8328468d3885b83d866b4b2f9972c8944f387106bf22d166bbed",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m009.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m009.motlist",
+          "bytes": 1547736,
+          "sourceSha256": "1c9d280240e89a8c259c2be95020be83d6961adbc3a3eb00332784e2966c37d5",
+          "sha256": "1c9d280240e89a8c259c2be95020be83d6961adbc3a3eb00332784e2966c37d5",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m010.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m010.motlist",
+          "bytes": 863680,
+          "sourceSha256": "d6114387e45c266a9c57cd5ca90742de0f5e6cf3d324c90ba1f4da1288c88fbf",
+          "sha256": "d6114387e45c266a9c57cd5ca90742de0f5e6cf3d324c90ba1f4da1288c88fbf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m011.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m011.motlist",
+          "bytes": 1486592,
+          "sourceSha256": "f30822e285063252eb37818a26ecb40463b8933e9e2cf47a16666680093f18a9",
+          "sha256": "f30822e285063252eb37818a26ecb40463b8933e9e2cf47a16666680093f18a9",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m012.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m012.motlist",
+          "bytes": 411232,
+          "sourceSha256": "0b5f134342676df6be40fc758d8cef40ef3844b77cb88318eadf887884d82bb8",
+          "sha256": "0b5f134342676df6be40fc758d8cef40ef3844b77cb88318eadf887884d82bb8",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m013.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m013.motlist",
+          "bytes": 358896,
+          "sourceSha256": "eae1c2194d4508e7e4428f36c88dba6d7ff29904d45434579aabea123dd46d17",
+          "sha256": "eae1c2194d4508e7e4428f36c88dba6d7ff29904d45434579aabea123dd46d17",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m014.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m014.motlist",
+          "bytes": 9420664,
+          "sourceSha256": "e71e65c85d0bf718997d16dedcb652e44ceefbefaff03381b718a857dd46ddb7",
+          "sha256": "e71e65c85d0bf718997d16dedcb652e44ceefbefaff03381b718a857dd46ddb7",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m015.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m015.motlist",
+          "bytes": 875696,
+          "sourceSha256": "9e5fa8e12f6d477d2a4152eb09abd0ea9c244a55692f8bd351097e7700eee526",
+          "sha256": "9e5fa8e12f6d477d2a4152eb09abd0ea9c244a55692f8bd351097e7700eee526",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m016.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m016.motlist",
+          "bytes": 1877744,
+          "sourceSha256": "41e91c3103332f6ce1f1696c820634e3edbd77ef7dd5e70588c65a7897962050",
+          "sha256": "41e91c3103332f6ce1f1696c820634e3edbd77ef7dd5e70588c65a7897962050",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m017.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m017.motlist",
+          "bytes": 3902888,
+          "sourceSha256": "b384b22295e9f442104fb811398a946261f348655cb06f23a5c7a6a754305def",
+          "sha256": "b384b22295e9f442104fb811398a946261f348655cb06f23a5c7a6a754305def",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m018.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m018.motlist",
+          "bytes": 400272,
+          "sourceSha256": "ce144d35666a847f521233a0337981f5cd738e529e4190fc0b55504e2c65803e",
+          "sha256": "ce144d35666a847f521233a0337981f5cd738e529e4190fc0b55504e2c65803e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m019.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m019.motlist",
+          "bytes": 1927408,
+          "sourceSha256": "e8608043aaed294a55443121ea9390b327fe8e6a34e8c42d714dc6360909eeb0",
+          "sha256": "e8608043aaed294a55443121ea9390b327fe8e6a34e8c42d714dc6360909eeb0",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m020.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m020.motlist",
+          "bytes": 998016,
+          "sourceSha256": "6580ae3d622084da55a2cf37abb8eb8197aada88bf54d2df11296228bbd85fcf",
+          "sha256": "6580ae3d622084da55a2cf37abb8eb8197aada88bf54d2df11296228bbd85fcf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m021.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m021.motlist",
+          "bytes": 65592,
+          "sourceSha256": "ae6ab4b431699b61590ff61fb882eb29cceee11c85c00a3e98983b653c220faf",
+          "sha256": "ae6ab4b431699b61590ff61fb882eb29cceee11c85c00a3e98983b653c220faf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m022.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m022.motlist",
+          "bytes": 4155988,
+          "sourceSha256": "0abc68eb17c215ac3e7a7e7aa20faa39503c35a4cba3737c90d0992a4c1e1a53",
+          "sha256": "0abc68eb17c215ac3e7a7e7aa20faa39503c35a4cba3737c90d0992a4c1e1a53",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m023.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m023.motlist",
+          "bytes": 502520,
+          "sourceSha256": "abec06a610d5d262e74a52f90029b37d85927d8efa04f357a3032821b7eea900",
+          "sha256": "abec06a610d5d262e74a52f90029b37d85927d8efa04f357a3032821b7eea900",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m024.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m024.motlist",
+          "bytes": 13587940,
+          "sourceSha256": "6f754ccae83542a82be12626fa90994b8f29be8ea2e3d13b0491895cb4438fe9",
+          "sha256": "6f754ccae83542a82be12626fa90994b8f29be8ea2e3d13b0491895cb4438fe9",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m025.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m025.motlist",
+          "bytes": 7215816,
+          "sourceSha256": "b3ba05b2962fe2ee6022419a812f755241edd33b794aff8b058ebbfd52d8983e",
+          "sha256": "b3ba05b2962fe2ee6022419a812f755241edd33b794aff8b058ebbfd52d8983e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m026.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m026.motlist",
+          "bytes": 14910008,
+          "sourceSha256": "b5741cf184e5f232cb18b815f1b245cae46347c59d6c48c1caf3877e91503acf",
+          "sha256": "b5741cf184e5f232cb18b815f1b245cae46347c59d6c48c1caf3877e91503acf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m027.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m027.motlist",
+          "bytes": 14525156,
+          "sourceSha256": "e11217498e7ad3d654db9ed39c1a016721af4169e63f51fc5274e967b5fc585e",
+          "sha256": "e11217498e7ad3d654db9ed39c1a016721af4169e63f51fc5274e967b5fc585e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m028.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m028.motlist",
+          "bytes": 40806948,
+          "sourceSha256": "929befaff45f8b87816f4a73533f152fcac011da1dcfaef7c2ef9bd5ca56bfd4",
+          "sha256": "929befaff45f8b87816f4a73533f152fcac011da1dcfaef7c2ef9bd5ca56bfd4",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m029.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m029.motlist",
+          "bytes": 4019752,
+          "sourceSha256": "383e10b5a48516b3ec63663d91bd593c9e63b3bf461211251d70dda0cf41d10a",
+          "sha256": "383e10b5a48516b3ec63663d91bd593c9e63b3bf461211251d70dda0cf41d10a",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m030.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m030.motlist",
+          "bytes": 1280968,
+          "sourceSha256": "56dac316394410937a315e8c4d839611bc10efff0282459a514be73981315c51",
+          "sha256": "56dac316394410937a315e8c4d839611bc10efff0282459a514be73981315c51",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m031.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m031.motlist",
+          "bytes": 96,
+          "sourceSha256": "c62fbbd6229f4d5e7b93f13fd90356aa764d86e77dc59fd0bbb36a283edf3b00",
+          "sha256": "c62fbbd6229f4d5e7b93f13fd90356aa764d86e77dc59fd0bbb36a283edf3b00",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m032.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m032.motlist",
+          "bytes": 17752596,
+          "sourceSha256": "2ff7d5de3e216bb690437ca8dd3a255c24a022412808400bf224a566736bf962",
+          "sha256": "2ff7d5de3e216bb690437ca8dd3a255c24a022412808400bf224a566736bf962",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m033.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m033.motlist",
+          "bytes": 5706004,
+          "sourceSha256": "a33221f1d3136173cf89dbede7cd8f5a1dbf309fb57893de2c3aca1e40619505",
+          "sha256": "a33221f1d3136173cf89dbede7cd8f5a1dbf309fb57893de2c3aca1e40619505",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m034.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m034.motlist",
+          "bytes": 2668728,
+          "sourceSha256": "409cd91e0e1bed66abdf1188865b28735f8e2188d4b6b506a3c4123cfffdccc6",
+          "sha256": "409cd91e0e1bed66abdf1188865b28735f8e2188d4b6b506a3c4123cfffdccc6",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m035.motlist",
+          "target": "mods/scarlet_hat_static/dynamic/motions/m035.motlist",
+          "bytes": 160128,
+          "sourceSha256": "e4bd3ee85f5721cb056a73d0248eee307dce9e9601446ae64af28d1ba69ca6f5",
+          "sha256": "e4bd3ee85f5721cb056a73d0248eee307dce9e9601446ae64af28d1ba69ca6f5",
+          "references": []
+        }
+      ]
+    },
+    "scarlet_no_hat_static": {
+      "pathMapEntryCount": 120,
+      "files": [
+        {
+          "source": "art/mods/scarlet/f5a699cc7.motbank",
+          "target": "mods/scarlet_no_hat_static/a14d70827a9d7fdd/f5a699cc7.motbank",
+          "bytes": 5128,
+          "sourceSha256": "5a699cc7838688e6a20dccd0200e0a34ac8a65180bd73aab2e4cd26c2900539a",
+          "sha256": "d30ead324923f74d1d71220758d586f6cbcee42f448b43caa3005599ebbe4a01",
+          "references": [
+            "Motion/Common/Variable/CharacterFaceCommonVariable.uvar",
+            "",
+            "mods/scarlet_no_hat_static/dynamic/motions/m007.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m008.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m006.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m011.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m010.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m017.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m019.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m018.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m016.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m013.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m014.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m012.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m009.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m020.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m015.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m021.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_aaa.user",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_aaa.user",
+          "bytes": 516,
+          "sourceSha256": "a7f22848c0d47372fd1c0f6a25c9e1236a718e15c2be71ddbed4d9ecf411bfe6",
+          "sha256": "a7f22848c0d47372fd1c0f6a25c9e1236a718e15c2be71ddbed4d9ecf411bfe6",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_common.motbank",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_common.motbank",
+          "bytes": 1752,
+          "sourceSha256": "393b681d015319d082e58cc43b301dfa00c99a68aa4d315121f9579f0224ec18",
+          "sha256": "af56f6e754b906d6fcf1969d4e23be0ffcc5408a3e21fb4a0c1b5b03acdd1a29",
+          "references": [
+            "Motion/Common/Variable/CharacterCommonVariable.uvar",
+            "",
+            "mods/scarlet_no_hat_static/dynamic/motions/m003.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m001.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m002.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m000.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m004.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_designchange.motbank",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_designchange.motbank",
+          "bytes": 352,
+          "sourceSha256": "2c4c8de8a3591e42e3f4cdfbf0679dd3a04351bd9d87bfb9e50f98cfb350f8b4",
+          "sha256": "76bcd8d7cc087d0bf7183f7eef0546b088c9c232cc21ffa7786ff58da90290fb",
+          "references": [
+            "",
+            "",
+            "mods/scarlet_no_hat_static/dynamic/motions/m005.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_sheath.user",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_sheath.user",
+          "bytes": 1228,
+          "sourceSha256": "cbcceaba11c152cfc36e5715befa7a81b12491c965df5389b3db22c54774b4d0",
+          "sha256": "cbcceaba11c152cfc36e5715befa7a81b12491c965df5389b3db22c54774b4d0",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_visual.user",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_visual.user",
+          "bytes": 4592,
+          "sourceSha256": "6c352cd695d4502433d17b3c6f41d9f7e145256a28510a1fe067890c99b5743b",
+          "sha256": "6c352cd695d4502433d17b3c6f41d9f7e145256a28510a1fe067890c99b5743b",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/isolation/scarlet_weapon.motbank",
+          "target": "mods/scarlet_no_hat_static/dynamic/scarlet_weapon.motbank",
+          "bytes": 4632,
+          "sourceSha256": "40f5d0e73b09e47bb4a4aebd9e40d1c554d52b2ea5ea8460463885c949057837",
+          "sha256": "c4a609638e175c720894f61a2b9061ff56cddce24dc6b8d7a3c4b6a07fc31718",
+          "references": [
+            "Motion/Common/Variable/CharacterCommonVariable.uvar",
+            "",
+            "mods/scarlet_no_hat_static/dynamic/motions/m028.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m032.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m025.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m029.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m027.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m031.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m023.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m024.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m033.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m034.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m022.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m026.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m030.motlist",
+            "mods/scarlet_no_hat_static/dynamic/motions/m035.motlist"
+          ]
+        },
+        {
+          "source": "art/mods/scarlet/p/empty_chain_1378acd141f77147f46804b4fa4.chain2",
+          "target": "mods/scarlet_no_hat_static/dynamic/chain_2.chain2",
+          "bytes": 480,
+          "sourceSha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "sha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/p/empty_chain_188ce7286fa25651.chain2",
+          "target": "mods/scarlet_no_hat_static/dynamic/chain_0.chain2",
+          "bytes": 480,
+          "sourceSha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "sha256": "5ff21d9ee989d91bfc0505c75e69eec61df53926399d13385afb3e8ccb0814b9",
+          "references": []
+        },
+        {
+          "source": "art/mods/scarlet/p/rig_dd9ab81db072df9531fbfe9d.fbxskel",
+          "target": "mods/scarlet_no_hat_static/dynamic/rig.fbxskel",
+          "bytes": 25946,
+          "sourceSha256": "f609544e9a16906f7d41a708e5b699bcb4451431c2d1cbcb0e19b4bd94d2f19b",
+          "sha256": "f609544e9a16906f7d41a708e5b699bcb4451431c2d1cbcb0e19b4bd94d2f19b",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m000.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m000.motlist",
+          "bytes": 13847412,
+          "sourceSha256": "9567a1bb4c98037e3789484d97141df799b68adb1a2dcb4fd7bacb2fb0bfbdf7",
+          "sha256": "9567a1bb4c98037e3789484d97141df799b68adb1a2dcb4fd7bacb2fb0bfbdf7",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m001.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m001.motlist",
+          "bytes": 13157092,
+          "sourceSha256": "2ad0c302721ad67650358a8f9e8ac26db5596f7f3053739995a828c354441bbf",
+          "sha256": "2ad0c302721ad67650358a8f9e8ac26db5596f7f3053739995a828c354441bbf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m002.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m002.motlist",
+          "bytes": 8714760,
+          "sourceSha256": "a4a2413beea26a219f3572d5078133e38235b2e4579a3b979c5c3f094f212c65",
+          "sha256": "a4a2413beea26a219f3572d5078133e38235b2e4579a3b979c5c3f094f212c65",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m003.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m003.motlist",
+          "bytes": 26452484,
+          "sourceSha256": "76ebc4bb92b7e6eb8de3becf803b95360e1847444e5a34dc07e4bab641c17ebb",
+          "sha256": "76ebc4bb92b7e6eb8de3becf803b95360e1847444e5a34dc07e4bab641c17ebb",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m004.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m004.motlist",
+          "bytes": 53200,
+          "sourceSha256": "269606997bdb861e9bdf32ae28a21bc58d162103eefabfb1579fb584d4382040",
+          "sha256": "269606997bdb861e9bdf32ae28a21bc58d162103eefabfb1579fb584d4382040",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m005.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m005.motlist",
+          "bytes": 4590088,
+          "sourceSha256": "aa9df665bc4dec43d5e970b4cfbbea8ceaf6a650c6ed6b368808312704359227",
+          "sha256": "aa9df665bc4dec43d5e970b4cfbbea8ceaf6a650c6ed6b368808312704359227",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m006.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m006.motlist",
+          "bytes": 181768,
+          "sourceSha256": "7f41d6dbfa8a2d0d6e849b469cf3a2d21577590ebddd870c2733f5f9e2f3f390",
+          "sha256": "7f41d6dbfa8a2d0d6e849b469cf3a2d21577590ebddd870c2733f5f9e2f3f390",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m007.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m007.motlist",
+          "bytes": 2528,
+          "sourceSha256": "395c4ce44f57bdcd5ef20f0e6d15bed0c62df54815635c9733db434d5cedf553",
+          "sha256": "395c4ce44f57bdcd5ef20f0e6d15bed0c62df54815635c9733db434d5cedf553",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m008.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m008.motlist",
+          "bytes": 390968,
+          "sourceSha256": "450994cf1bea8328468d3885b83d866b4b2f9972c8944f387106bf22d166bbed",
+          "sha256": "450994cf1bea8328468d3885b83d866b4b2f9972c8944f387106bf22d166bbed",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m009.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m009.motlist",
+          "bytes": 1547736,
+          "sourceSha256": "1c9d280240e89a8c259c2be95020be83d6961adbc3a3eb00332784e2966c37d5",
+          "sha256": "1c9d280240e89a8c259c2be95020be83d6961adbc3a3eb00332784e2966c37d5",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m010.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m010.motlist",
+          "bytes": 863680,
+          "sourceSha256": "d6114387e45c266a9c57cd5ca90742de0f5e6cf3d324c90ba1f4da1288c88fbf",
+          "sha256": "d6114387e45c266a9c57cd5ca90742de0f5e6cf3d324c90ba1f4da1288c88fbf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m011.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m011.motlist",
+          "bytes": 1486592,
+          "sourceSha256": "f30822e285063252eb37818a26ecb40463b8933e9e2cf47a16666680093f18a9",
+          "sha256": "f30822e285063252eb37818a26ecb40463b8933e9e2cf47a16666680093f18a9",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m012.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m012.motlist",
+          "bytes": 411232,
+          "sourceSha256": "0b5f134342676df6be40fc758d8cef40ef3844b77cb88318eadf887884d82bb8",
+          "sha256": "0b5f134342676df6be40fc758d8cef40ef3844b77cb88318eadf887884d82bb8",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m013.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m013.motlist",
+          "bytes": 358896,
+          "sourceSha256": "eae1c2194d4508e7e4428f36c88dba6d7ff29904d45434579aabea123dd46d17",
+          "sha256": "eae1c2194d4508e7e4428f36c88dba6d7ff29904d45434579aabea123dd46d17",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m014.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m014.motlist",
+          "bytes": 9420664,
+          "sourceSha256": "e71e65c85d0bf718997d16dedcb652e44ceefbefaff03381b718a857dd46ddb7",
+          "sha256": "e71e65c85d0bf718997d16dedcb652e44ceefbefaff03381b718a857dd46ddb7",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m015.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m015.motlist",
+          "bytes": 875696,
+          "sourceSha256": "9e5fa8e12f6d477d2a4152eb09abd0ea9c244a55692f8bd351097e7700eee526",
+          "sha256": "9e5fa8e12f6d477d2a4152eb09abd0ea9c244a55692f8bd351097e7700eee526",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m016.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m016.motlist",
+          "bytes": 1877744,
+          "sourceSha256": "41e91c3103332f6ce1f1696c820634e3edbd77ef7dd5e70588c65a7897962050",
+          "sha256": "41e91c3103332f6ce1f1696c820634e3edbd77ef7dd5e70588c65a7897962050",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m017.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m017.motlist",
+          "bytes": 3902888,
+          "sourceSha256": "b384b22295e9f442104fb811398a946261f348655cb06f23a5c7a6a754305def",
+          "sha256": "b384b22295e9f442104fb811398a946261f348655cb06f23a5c7a6a754305def",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m018.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m018.motlist",
+          "bytes": 400272,
+          "sourceSha256": "ce144d35666a847f521233a0337981f5cd738e529e4190fc0b55504e2c65803e",
+          "sha256": "ce144d35666a847f521233a0337981f5cd738e529e4190fc0b55504e2c65803e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m019.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m019.motlist",
+          "bytes": 1927408,
+          "sourceSha256": "e8608043aaed294a55443121ea9390b327fe8e6a34e8c42d714dc6360909eeb0",
+          "sha256": "e8608043aaed294a55443121ea9390b327fe8e6a34e8c42d714dc6360909eeb0",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m020.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m020.motlist",
+          "bytes": 998016,
+          "sourceSha256": "6580ae3d622084da55a2cf37abb8eb8197aada88bf54d2df11296228bbd85fcf",
+          "sha256": "6580ae3d622084da55a2cf37abb8eb8197aada88bf54d2df11296228bbd85fcf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m021.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m021.motlist",
+          "bytes": 65592,
+          "sourceSha256": "ae6ab4b431699b61590ff61fb882eb29cceee11c85c00a3e98983b653c220faf",
+          "sha256": "ae6ab4b431699b61590ff61fb882eb29cceee11c85c00a3e98983b653c220faf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m022.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m022.motlist",
+          "bytes": 4155988,
+          "sourceSha256": "0abc68eb17c215ac3e7a7e7aa20faa39503c35a4cba3737c90d0992a4c1e1a53",
+          "sha256": "0abc68eb17c215ac3e7a7e7aa20faa39503c35a4cba3737c90d0992a4c1e1a53",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m023.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m023.motlist",
+          "bytes": 502520,
+          "sourceSha256": "abec06a610d5d262e74a52f90029b37d85927d8efa04f357a3032821b7eea900",
+          "sha256": "abec06a610d5d262e74a52f90029b37d85927d8efa04f357a3032821b7eea900",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m024.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m024.motlist",
+          "bytes": 13587940,
+          "sourceSha256": "6f754ccae83542a82be12626fa90994b8f29be8ea2e3d13b0491895cb4438fe9",
+          "sha256": "6f754ccae83542a82be12626fa90994b8f29be8ea2e3d13b0491895cb4438fe9",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m025.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m025.motlist",
+          "bytes": 7215816,
+          "sourceSha256": "b3ba05b2962fe2ee6022419a812f755241edd33b794aff8b058ebbfd52d8983e",
+          "sha256": "b3ba05b2962fe2ee6022419a812f755241edd33b794aff8b058ebbfd52d8983e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m026.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m026.motlist",
+          "bytes": 14910008,
+          "sourceSha256": "b5741cf184e5f232cb18b815f1b245cae46347c59d6c48c1caf3877e91503acf",
+          "sha256": "b5741cf184e5f232cb18b815f1b245cae46347c59d6c48c1caf3877e91503acf",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m027.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m027.motlist",
+          "bytes": 14525156,
+          "sourceSha256": "e11217498e7ad3d654db9ed39c1a016721af4169e63f51fc5274e967b5fc585e",
+          "sha256": "e11217498e7ad3d654db9ed39c1a016721af4169e63f51fc5274e967b5fc585e",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m028.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m028.motlist",
+          "bytes": 40806948,
+          "sourceSha256": "929befaff45f8b87816f4a73533f152fcac011da1dcfaef7c2ef9bd5ca56bfd4",
+          "sha256": "929befaff45f8b87816f4a73533f152fcac011da1dcfaef7c2ef9bd5ca56bfd4",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m029.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m029.motlist",
+          "bytes": 4019752,
+          "sourceSha256": "383e10b5a48516b3ec63663d91bd593c9e63b3bf461211251d70dda0cf41d10a",
+          "sha256": "383e10b5a48516b3ec63663d91bd593c9e63b3bf461211251d70dda0cf41d10a",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m030.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m030.motlist",
+          "bytes": 1280968,
+          "sourceSha256": "56dac316394410937a315e8c4d839611bc10efff0282459a514be73981315c51",
+          "sha256": "56dac316394410937a315e8c4d839611bc10efff0282459a514be73981315c51",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m031.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m031.motlist",
+          "bytes": 96,
+          "sourceSha256": "c62fbbd6229f4d5e7b93f13fd90356aa764d86e77dc59fd0bbb36a283edf3b00",
+          "sha256": "c62fbbd6229f4d5e7b93f13fd90356aa764d86e77dc59fd0bbb36a283edf3b00",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m032.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m032.motlist",
+          "bytes": 17752596,
+          "sourceSha256": "2ff7d5de3e216bb690437ca8dd3a255c24a022412808400bf224a566736bf962",
+          "sha256": "2ff7d5de3e216bb690437ca8dd3a255c24a022412808400bf224a566736bf962",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m033.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m033.motlist",
+          "bytes": 5706004,
+          "sourceSha256": "a33221f1d3136173cf89dbede7cd8f5a1dbf309fb57893de2c3aca1e40619505",
+          "sha256": "a33221f1d3136173cf89dbede7cd8f5a1dbf309fb57893de2c3aca1e40619505",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m034.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m034.motlist",
+          "bytes": 2668728,
+          "sourceSha256": "409cd91e0e1bed66abdf1188865b28735f8e2188d4b6b506a3c4123cfffdccc6",
+          "sha256": "409cd91e0e1bed66abdf1188865b28735f8e2188d4b6b506a3c4123cfffdccc6",
+          "references": []
+        },
+        {
+          "source": "motion/mods/scarlet/p/m035.motlist",
+          "target": "mods/scarlet_no_hat_static/dynamic/motions/m035.motlist",
+          "bytes": 160128,
+          "sourceSha256": "e4bd3ee85f5721cb056a73d0248eee307dce9e9601446ae64af28d1ba69ca6f5",
+          "sha256": "e4bd3ee85f5721cb056a73d0248eee307dce9e9601446ae64af28d1ba69ca6f5",
+          "references": []
+        }
+      ]
+    }
+  },
+  "actorContract": "actor-contract.json",
+  "deliveryNote": "The inventory is audit metadata. Dynamic companion bytes are supplied by the release candidate; whole-player actor PFB/constraint delta remains blocked and must not be globally replaced."
+}
