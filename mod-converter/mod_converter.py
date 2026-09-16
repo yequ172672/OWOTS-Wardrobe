@@ -1320,6 +1320,10 @@ class Converter:
         self.actor_skeleton_asset: Asset | None = None
         self.actor_skeleton_info: FbxSkelInfo | None = None
         self.actor_skeleton_body_mesh: str | None = None
+        # Mesh-authored shape: no separate rig file, so the declaration carries
+        # the baseline joint names only and the runtime reads the mesh rest.
+        self.actor_skeleton_mesh_only: bool = False
+        self.actor_skeleton_joint_names: list[str] | None = None
 
     def inspect(self) -> None:
         self.modinfo = parse_modinfo(self.args.input.resolve(), self.report) if self.args.input.is_dir() else None
@@ -1470,6 +1474,52 @@ class Converter:
             return None
         meshes.sort(key=lambda value: (value[0], value[1]))
         return meshes[0][2]
+
+    def _prepare_mesh_actor_skeleton(self) -> None:
+        """Publish a skeleton contract when the shape lives in the BODY mesh.
+
+        A MOD that ships no separate rig file still carries its authored rest in
+        the BODY mesh's own embedded skeleton.  In that case emit the declaration
+        with the baseline joint names and no ``bindPositions``; the runtime then
+        reads the equipped mesh's own rest.  A separate validated rig always wins
+        (handled by ``_prepare_actor_skeleton``).
+        """
+        if self.actor_skeleton_asset is not None or self.actor_skeleton_candidates:
+            return
+        if getattr(self.args, "category", None) != "body" or "BODY" not in self.part_roots:
+            return
+        if self.game is None:
+            return
+        baseline_asset = self.game.find(ACTOR_SKELETON_BASELINE_RESOURCE, False)
+        if baseline_asset is None:
+            return
+        try:
+            baseline = parse_fbxskel(
+                baseline_asset.path.read_bytes(), ACTOR_SKELETON_BASELINE_RESOURCE
+            )
+        except (OSError, ValueError):
+            return
+        if baseline.bone_count != ACTOR_SKELETON_BONE_COUNT:
+            return
+        body_mesh = self._body_mesh_for_actor_skeleton()
+        if body_mesh is None:
+            return
+        self.actor_skeleton_mesh_only = True
+        self.actor_skeleton_body_mesh = body_mesh
+        self.actor_skeleton_joint_names = list(baseline.names)
+        self.report.stats["actorSkeleton"] = {
+            "source": "mesh",
+            "bodyMesh": body_mesh,
+            "bindPositions": "mesh",
+            "baselineResource": ACTOR_SKELETON_BASELINE_RESOURCE,
+            "baselineSha256": getattr(baseline_asset, "sha256", None),
+            "boneCount": baseline.bone_count,
+        }
+        self.report.info(
+            "ACTOR_SKELETON_MESH_SOURCE",
+            "体型取自 BODY mesh 内嵌骨架，manifest 不写 bindPositions，运行时读取 mesh 休止。",
+            body_mesh,
+        )
 
     def _prepare_actor_skeleton(self) -> None:
         """Validate and register one source actor rig for private publishing.
@@ -2181,6 +2231,22 @@ class Converter:
 
     def _actor_skeleton_manifest(self, identity: str) -> dict[str, Any] | None:
         """Build the schema-1 skeleton object from verified source bytes."""
+        if self.actor_skeleton_mesh_only:
+            body_mesh = self.routes.get((self.actor_skeleton_body_mesh or "").casefold())
+            names = self.actor_skeleton_joint_names
+            if not body_mesh or not names:
+                return None
+            if not body_mesh.casefold().startswith(f"mods/{identity.casefold()}/"):
+                raise ConversionError("BODY mesh 输出路径未位于 MOD 私有命名空间")
+            # No `resource` and no `bindPositions`: the runtime reads the equipped
+            # BODY mesh's own skeleton rest for the authored shape.
+            return {
+                "schemaVersion": 1,
+                "kind": "actor-fbxskel-v1",
+                "bodyMesh": body_mesh,
+                "jointNames": list(names),
+                "baselineResource": ACTOR_SKELETON_BASELINE_RESOURCE,
+            }
         if self.actor_skeleton_asset is None or self.actor_skeleton_info is None:
             return None
         resource = self.routes.get(self.actor_skeleton_asset.logical.casefold())
@@ -2228,6 +2294,7 @@ class Converter:
             self._prepare_game()
         self._discover_graph([item for values in self.part_roots.values() for item in values[:2] if item])
         self._prepare_actor_skeleton()
+        self._prepare_mesh_actor_skeleton()
         self._verify_auto_part_graph()
         self._compute_routes()
         self._audit_unconsumed_mod_assets()

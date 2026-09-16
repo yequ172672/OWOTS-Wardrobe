@@ -69,8 +69,12 @@ body 可以有 BODY/HEAD/HAIR；披风、护手、武器分别是独立分类。
 ```
 
 助手核对 converted 状态、静态包范围、清单引用和唯一 ID，再打包并输出 JSON 摘要。含独立骨架时，
-还要核对 `manifest.skeleton` 的 `resource` 与 `bodyMesh` 都指向 `mods/<id>/` 私有资源，
-有完整 93 个 `jointNames` 与 `bindPositions`，并确认报告包含 `ACTOR_SKELETON_VERIFIED` 且没有骨架错误。
+还要核对 `manifest.skeleton` 的资源路径都指向 `mods/<id>/` 私有资源、有完整 93 个 `jointNames`，
+并确认报告没有骨架错误。体型来源有两种，转换器会自动判断：
+- 作者提供通过校验的独立 `FBXSKEL`：`bindPositions` 取自源文件，`resource`/`bodyMesh` 指向私有目录，
+  报告含 `ACTOR_SKELETON_VERIFIED`；
+- 体型写在 BODY mesh 内嵌骨架里：只用基线的 `jointNames`，**没有 `bindPositions`/`resource`**，
+  运行时读取 mesh 休止（报告含 `ACTOR_SKELETON_MESH_SOURCE`）。
 它不会证明游戏内视觉效果。进一步确认网格数据未被裁减、高清纹理和 streaming 保留、
 PFB/USER/MDF 写回检查通过。需要时用随工具源码做只读核验，不把 game 安装作为输出目录。
 

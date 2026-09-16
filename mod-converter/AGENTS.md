@@ -60,10 +60,16 @@ and test extracts remain outside it.
 * A single v7 FBXSKEL with the stock 93-joint name/order and parent topology,
   baseline rotations/scales, and a MOD-owned BODY mesh may be published as
   `manifest.skeleton` (`actor-fbxskel-v1`). Its source bind positions remain in
-  the manifest. Invalid, ambiguous, expanded (such as Scarlet's 264-joint rig),
-  non-BODY, or missing-baseline cases stay blocking diagnostics; do not fall
-  back to `ACTOR_SKELETON_ADAPTER_REQUIRED` or claim support for scripted actor
-  extensions.
+  the manifest (`bindPositions` from the rig file). Invalid, ambiguous, expanded
+  (such as Scarlet's 264-joint rig), non-BODY, or missing-baseline cases stay
+  blocking diagnostics; do not fall back to `ACTOR_SKELETON_ADAPTER_REQUIRED` or
+  claim support for scripted actor extensions.
+* Shape source is auto-detected. A validated rig file wins; otherwise, when the
+  BODY PFB reaches a MOD-owned mesh and the stock `/90` baseline is available,
+  the converter emits the same declaration with the baseline `jointNames` but
+  **no `bindPositions` and no `resource`** (`_prepare_mesh_actor_skeleton`). The
+  runtime then reads the equipped BODY mesh's own skeleton rest. A private `/90`
+  must never be installed at the game root skeleton path.
 * `--parts-plan` selects an explicit coherent set of parts within one category.
   Apply the same catalog-role and actual-row checks to every planned root;
   reject duplicate parts, mixed categories and conflicting single-root flags.

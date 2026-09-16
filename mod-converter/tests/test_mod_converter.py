@@ -214,6 +214,59 @@ class ConverterSafetyTests(unittest.TestCase):
             instance._audit_unconsumed_mod_assets()
             self.assertFalse(report.errors)
 
+    def test_mesh_authored_shape_publishes_skeleton_without_bind_positions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mesh_path = root / "natives/stm/art/mods/example/body.mesh.260209350"
+            mesh_path.parent.mkdir(parents=True)
+            mesh_path.write_bytes(b"body mesh")
+            baseline_path = root.parent / f"{root.name}-baseline.fbxskel.7"
+            baseline_path.write_bytes(self._fbxskel_bytes())
+            report = converter.Report("convert", root)
+            args = converter.make_parser().parse_args([
+                "convert", "--input", str(root), "--output", str(root / "out"),
+                "--id", "example", "--category", "body", "--hide-part", "CLOAK",
+            ])
+            instance = converter.Converter(args, report)
+            instance.bundle = converter.InputBundle(root, report)
+            instance.bundle.load()
+            prefab = "GameDesign/Action/Player/_Prefab/PartsList/Body/example.pfb"
+            catalog = "gamedesign/system/catalogdata/playerbodypartslist_1st.user"
+            prefab_path = root / "prefab.pfb.18"
+            prefab_path.write_bytes(b"prefab")
+            prefab_asset = converter.Asset(prefab, "18", False, prefab_path, "game", 6)
+            mesh_asset = instance.bundle.source.get("art/mods/example/body.mesh")
+            self.assertIsNotNone(mesh_asset)
+            instance.part_roots = {"BODY": (prefab, catalog, 123)}
+            instance.args.category = "body"
+            instance.nodes = {
+                prefab.casefold(): converter.ResourceNode(prefab, prefab_asset, (mesh_asset.logical,)),
+                mesh_asset.logical.casefold(): converter.ResourceNode(mesh_asset.logical, mesh_asset, ()),
+            }
+            baseline_asset = converter.Asset(
+                converter.ACTOR_SKELETON_BASELINE_RESOURCE, "7", False,
+                baseline_path, "game", baseline_path.stat().st_size,
+            )
+
+            class FakeGame:
+                def find(self, logical, streaming=False):
+                    return None if streaming or logical != converter.ACTOR_SKELETON_BASELINE_RESOURCE else baseline_asset
+
+            instance.game = FakeGame()
+            instance._prepare_actor_skeleton()
+            instance._prepare_mesh_actor_skeleton()
+            self.assertTrue(instance.actor_skeleton_mesh_only)
+            self.assertEqual(instance.actor_skeleton_body_mesh, mesh_asset.logical)
+            instance._compute_routes()
+            manifest = instance._actor_skeleton_manifest("example")
+            self.assertEqual(manifest["kind"], "actor-fbxskel-v1")
+            self.assertNotIn("resource", manifest)
+            self.assertNotIn("bindPositions", manifest)
+            self.assertEqual(len(manifest["jointNames"]), 93)
+            self.assertTrue(manifest["bodyMesh"].startswith("mods/example/"))
+            self.assertEqual(manifest["baselineResource"], converter.ACTOR_SKELETON_BASELINE_RESOURCE)
+            self.assertFalse(report.errors)
+
     def test_actor_skeleton_cannot_bind_non_body_category(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

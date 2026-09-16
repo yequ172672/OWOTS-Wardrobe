@@ -38,6 +38,11 @@ CONVERSION-REPORT.md                      中文报告
 
 如果 body 输入只有一个 v7 `FBXSKEL`，且它是和原始 `/90` 角色骨架同名、同父层级、同旋转/缩放及 segment-scaling 标志的完整 93 关节文件，依赖图还包含 MOD-owned BODY mesh，转换器会在 manifest 写入 `skeleton`。其中的 `.fbxskel` 和 BODY mesh 都会复制到该 MOD 的私有目录，`jointNames` 保持文件顺序，`bindPositions` 取自源文件。源骨架的绑定位置可以改变；新增关节、脚本驱动的 actor 扩展、多个候选骨架和 Scarlet 的 264 关节骨架仍需专用适配器。
 
+没有独立 `FBXSKEL`、但作者把体型写在 BODY mesh 内嵌骨架里时，转换器同样会在 manifest 写入
+`skeleton`：`jointNames` 取自原始 `/90` 基线，**不写 `bindPositions`、也不写 `resource`**，
+运行时改为读取当前生效 BODY mesh 的休止姿态。两条来源（独立骨架文件 / mesh）互斥：有通过校验
+的独立骨架文件时以它为准；独立骨架文件非法、歧义或拓扑不支持时仍然报错，不会静默改走 mesh。
+
 ## 输入和参考目录
 
 * 松散输入可以是含 `natives/stm` 的目录，也可以是只含游戏相对路径的解包目录。大小写差异会归一化匹配，但同一逻辑资源若内容不同会报错。
