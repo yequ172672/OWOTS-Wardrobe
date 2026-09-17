@@ -60,7 +60,7 @@ def T(zh: str, en: str) -> str:
 
 
 # Sentinel for the "auto" combo entries, localized for display but compared by identity.
-AUTO = T(AUTO, "Auto")
+AUTO = T("自动", "Auto")
 
 
 def readable_report(output: str) -> str:
@@ -419,6 +419,36 @@ def smoke_test(argv: list[str]) -> int:
     return mod_converter.run(args)
 
 
+def gui_self_test() -> int:
+    """Build every window off-screen and fail loudly if the interface cannot start.
+
+    The release EXE is windowed, so a startup exception is invisible to the build
+    script without an explicit check.  This catches module-level and widget
+    construction regressions (and frozen-build data problems) before shipping.
+    """
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        window = ConverterWindow(root)
+        window.vars["input"].set(str(Path.cwd() / "gui-self-test.pak"))
+        window.vars["output"].set(str(Path.cwd() / "gui-self-test-output"))
+        automatic = window._args("convert")
+        if automatic.category is not None or automatic.part is not None:
+            raise AssertionError("the Auto sentinel leaked into the CLI arguments")
+        window.category.set("body")
+        selected = window._args("convert")
+        if selected.category != "body" or selected.part is not None:
+            raise AssertionError("the selected category did not reach the CLI arguments")
+        window._toggle_advanced()
+        window._toggle_advanced()
+        root.destroy()
+    except Exception as error:  # Build gate: report the reason instead of a traceback dialog.
+        print(f"GUI self-test failed: {error}")
+        return 1
+    print("GUI self-test OK")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--cli":
@@ -429,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         return mod_converter.run(args)
     if argv and argv[0] == "--smoke-test":
         return smoke_test(argv[1:])
+    if argv and argv[0] == "--self-test":
+        return gui_self_test()
     root = tk.Tk()
     # ttk's default theme keeps native keyboard/focus behavior; only colors
     # and spacing are customized for readable dark-mode contrast.

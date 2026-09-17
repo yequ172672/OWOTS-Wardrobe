@@ -12,7 +12,7 @@ and test extracts remain outside it.
 | --- | --- |
 | `mod_converter.py` | Standard-library CLI, safe KPKA reader, dependency graph, FBXSKEL v1 validation and schema 2 publisher |
 | `texture_resolution.py` | Pure-Python TEX251111100 structure inspection and conservative streaming-to-base promotion |
-| `converter_gui.py` | Chinese Tkinter front end used by the Windows EXE |
+| `converter_gui.py` | Chinese Tkinter front end used by the Windows EXE (`--self-test` builds every window off-screen as the release gate) |
 | `convert_mod.cmd` | Prompted launcher for players with Python 3 |
 | `game_pak_reference.py` | Read-only original Steam PAK index and on-demand dependency provider |
 | `README.md` | Player instructions and conversion boundaries |
@@ -85,3 +85,10 @@ and test extracts remain outside it.
   must reach a MOD-owned mesh or MDF2 before conversion succeeds. Dynamic Lua
   or native plugins require explicit static-only opt-in and remain listed as an
   unsupported behavior boundary.
+* The interface language is auto-detected once into `CHINESE_UI` and every
+  literal goes through `T(zh, en)`; the "auto" combo value is the module-level
+  `AUTO` sentinel compared by identity, never a translated string. Module scope
+  must be side-effect free beyond defining those constants, so no name may
+  appear in its own initializer. `build_release.py` runs the frozen EXE with
+  `--self-test` and fails the build when the window cannot be constructed; never
+  ship a windowed EXE whose startup path was not exercised.

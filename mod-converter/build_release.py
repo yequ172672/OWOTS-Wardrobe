@@ -14,8 +14,8 @@ import subprocess
 import sys
 import zipfile
 
-RELEASE_VERSION = '2026.09.17'
-RELEASE_DATE = '20260917'
+RELEASE_VERSION = '2026.09.17b'
+RELEASE_DATE = '20260917b'
 
 
 def digest(path):
@@ -71,6 +71,12 @@ def main():
     package.mkdir()
     (output / 'dist/OWOTS-ModConverter.exe').rename(package / 'OWOTS-ModConverter.exe')
     shutil.copyfile(runtime / 'OWOTS_STM_Release.list', package / 'OWOTS_STM_Release.list')
+    # The EXE is windowed, so a startup crash would otherwise ship silently.
+    self_test = subprocess.run([str(package / 'OWOTS-ModConverter.exe'), '--self-test'],
+                               cwd=package, capture_output=True, text=True)
+    if self_test.returncode != 0:
+        raise SystemExit('Packaged GUI self-test failed (rc={}): {}{}'.format(
+            self_test.returncode, self_test.stdout, self_test.stderr))
     shutil.copytree(build_licenses, package / 'licenses')
     source_target = package / 'source'
     source_target.mkdir()
