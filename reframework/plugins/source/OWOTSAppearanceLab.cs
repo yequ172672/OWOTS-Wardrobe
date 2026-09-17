@@ -262,6 +262,51 @@ public static class OWOTSAppearanceLab {
     static readonly object s_iconLock = new object();
     static readonly Dictionary<string, ulong> s_icons = new Dictionary<string, ulong>();
     static bool s_iconApiUnavailable;
+    // The standalone window takes the mouse through custom REF extensions
+    // (owots_ui_icon_* / m_external_ui_active). Upstream REF lacks them, so the
+    // window can then only receive input while the REF menu itself is open.
+    static bool s_customRefExtensions = true;
+    [DllImport("user32.dll")]
+    static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    const uint KeyEventKeyUp = 0x0002;
+
+    static void ProbeCustomRefExtensions() {
+        try {
+            // The icon export only exists in the custom REF build; use it as the probe.
+            owots_ui_icon_release(0);
+            s_customRefExtensions = true;
+        } catch (DllNotFoundException) { s_customRefExtensions = false; }
+        catch (EntryPointNotFoundException) { s_customRefExtensions = false; }
+        catch { s_customRefExtensions = true; }
+    }
+
+    // REF stores its menu key in re2_fw_config.txt (VK code); default is Insert.
+    static ushort RefMenuVirtualKey() {
+        try {
+            var root = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+            var path = Path.Combine(root, "re2_fw_config.txt");
+            if (File.Exists(path))
+                foreach (var line in File.ReadAllLines(path))
+                    if (line.StartsWith("REFrameworkConfig_MenuKey_V2", StringComparison.Ordinal)) {
+                        int separator = line.IndexOf('=');
+                        if (separator > 0 && int.TryParse(line.Substring(separator + 1).Trim(), out int vk) && vk > 0 && vk < 256)
+                            return (ushort)vk;
+                        break;
+                    }
+        } catch { }
+        return 0x2D; // VK_INSERT
+    }
+
+    // Upstream REF only releases the cursor while its own menu is open. Bind the wardrobe
+    // hotkey to REF's menu key so both windows appear together and input is usable.
+    static void EnsureRefMenuOpen() {
+        try {
+            if (REFrameworkNET.API.IsDrawingUI()) return;
+            byte vk = (byte)RefMenuVirtualKey();
+            keybd_event(vk, 0, 0, UIntPtr.Zero);
+            keybd_event(vk, 0, KeyEventKeyUp, UIntPtr.Zero);
+        } catch { }
+    }
     static int s_refreshIcons;
     static readonly NativeCostumeSelections s_nativeSelections = new NativeCostumeSelections();
     static bool s_nativeMenuHooks;
@@ -344,6 +389,8 @@ public static class OWOTSAppearanceLab {
                 s_lastId = doc.RootElement.GetProperty("id").GetString(); } catch { }
         }
         API.LogInfo("[OWOTS Appearance Lab] Ready; native catalog probes are opt-in.");
+        ProbeCustomRefExtensions();
+        try { System.Threading.Tasks.Task.Run(() => CheckForUpdates()); } catch { }
         try { InstallCostumeHooks(); } catch (Exception e) { s_menuMessage = T("原生菜单元数据钩子安装失败：", "Failed to install native menu metadata hooks: ") + e.Message; }
         try { ReadRegistry(); PublishMenu(); }
         catch (Exception e) { s_menuMessage = T("读取外观目录失败：", "Failed to read appearance catalog: ") + e.Message; PublishMenu(); }
@@ -856,13 +903,24 @@ public static class OWOTSAppearanceLab {
     public static void DrawMenu() {
         if (s_stopped) return;
         var hotkey = Enum.Parse<ImGuiKey>(Volatile.Read(ref s_preferences).Hotkey);
-        if (!ImGui.GetIO().WantTextInput && ImGui.IsKeyPressed(hotkey, false)) s_windowOpen = !s_windowOpen;
+        if (!ImGui.GetIO().WantTextInput && ImGui.IsKeyPressed(hotkey, false)) {
+            bool opening = !s_windowOpen;
+            s_windowOpen = !s_windowOpen;
+            // Stock REF releases the cursor only for its own menu; open it together so
+            // the standalone window is usable there too.
+            if (opening && s_windowOpen && !s_customRefExtensions) EnsureRefMenuOpen();
+        }
         if (!s_windowOpen) return;
         if (!ImGui.GetIO().WantTextInput && ImGui.IsKeyPressed(ImGuiKey.Escape, false)) {
             if (Volatile.Read(ref s_confirmation) != null) Volatile.Write(ref s_confirmation, null);
             else s_windowOpen = false;
             return;
         }
+        // REFramework only unlocks the cursor / suppresses game input when the ImGui
+        // capture flags are set. Set them on the live IO for this frame as well, so the
+        // independent window takes the mouse immediately instead of after a frame.
+        ImGui.GetIO().WantCaptureKeyboard = true;
+        ImGui.GetIO().WantCaptureMouse = true;
         ImGui.SetNextFrameWantCaptureKeyboard(true);
         ImGui.SetNextFrameWantCaptureMouse(true);
         ImGui.SetNextWindowSize(new System.Numerics.Vector2(1080, 760), ImGuiCond.FirstUseEver);
@@ -1012,12 +1070,15 @@ public static class OWOTSAppearanceLab {
         }
         if (focused == null && entries.Count > 0) { focused = entries[0]; s_focusedEntry = focused.Id; }
         bool wide = ImGui.GetContentRegionAvail().X >= 850;
+        // The entry list fills the window height (minus the footer) instead of a fixed
+        // height, so resizing the window shows more entries rather than empty space.
+        float listHeight = Math.Max(220f, ImGui.GetContentRegionAvail().Y - 132f);
         if (ImGui.BeginTable("wardrobe-columns-v2", wide ? 2 : 1, ImGuiTableFlags.Resizable)) {
             try {
                 ImGui.TableSetupColumn(T("浏览", "Browse"), ImGuiTableColumnFlags.WidthStretch, 0.58f);
                 if (wide) ImGui.TableSetupColumn(T("预览", "Preview"), ImGuiTableColumnFlags.WidthStretch, 0.42f);
                 ImGui.TableNextColumn();
-                bool visible = ImGui.BeginChild("entries-v2", new System.Numerics.Vector2(0, wide ? 460 : 300));
+                bool visible = ImGui.BeginChild("entries-v2", new System.Numerics.Vector2(0, listHeight));
                 try { if (visible) {
                     if (entries.Count == 0) ImGui.TextUnformatted(T("没有匹配的外观。可清空搜索或在设置中刷新。", "No matching appearances. Clear the search or refresh in Settings."));
                     int columns = s_cardMode ? Math.Max(1, (int)(ImGui.GetContentRegionAvail().X / 205)) : 1;
@@ -1092,6 +1153,89 @@ public static class OWOTSAppearanceLab {
             ImGui.TextDisabled(T("单击预览 · 双击应用 · ", "Click to preview · Double-click to apply · ") + Volatile.Read(ref s_preferences).Hotkey + T(" 键开关 · Esc 关闭", " to toggle · Esc to close"));
             foreach (var issue in menu.Issues) ImGui.TextUnformatted(issue);
         } finally { ImGui.PopTextWrapPos(); }
+        DrawFooter();
+    }
+
+    static readonly System.Numerics.Vector4 LinkBlue = new(0.45f, 0.68f, 1f, 1);
+    const string RepositoryUrl = "https://github.com/yequ172672/OWOTS-Wardrobe";
+    const string CaimoguUrl = "https://www.caimogu.cc/post/2485977.html";
+    const string BilibiliUrl = "https://space.bilibili.com/93825767";
+    const string DiscordName = "yequflac";
+    const string CurrentVersion = "2026.09.17";
+    static volatile string s_latestVersion;
+    static volatile string s_updateState = "checking";
+
+    static void OpenUrl(string url) {
+        try { Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true }); } catch { }
+    }
+
+    // Blue, hoverable, clickable link with an underline.
+    static void Link(string label, string url) {
+        ImGui.TextColored(LinkBlue, label);
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        ImGui.GetWindowDrawList().AddLine(new System.Numerics.Vector2(min.X, max.Y),
+            new System.Numerics.Vector2(max.X, max.Y), ImGui.GetColorU32(LinkBlue));
+        if (ImGui.IsItemHovered()) {
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            ImGui.SetTooltip(url);
+        }
+        if (ImGui.IsItemClicked()) OpenUrl(url);
+    }
+
+    static void CopyableText(string label, string text) {
+        ImGui.TextColored(LinkBlue, label);
+        if (ImGui.IsItemHovered()) {
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            ImGui.SetTooltip(T("点击复制", "Click to copy"));
+        }
+        if (ImGui.IsItemClicked()) { try { ImGui.SetClipboardText(text); } catch { } }
+    }
+
+    // Asynchronously compares the local version with the latest GitHub release tag.
+    static void CheckForUpdates() {
+        try {
+            using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("OWOTS-Wardrobe/" + CurrentVersion);
+            var response = client.GetAsync(
+                "https://api.github.com/repos/yequ172672/OWOTS-Wardrobe/releases/latest").GetAwaiter().GetResult();
+            // No published release yet: treat as up to date instead of an error.
+            if (!response.IsSuccessStatusCode) { s_updateState = "ok"; return; }
+            using var doc = JsonDocument.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult());
+            if (doc.RootElement.TryGetProperty("tag_name", out var tag)) s_latestVersion = tag.GetString();
+            s_updateState = "ok";
+        } catch { s_updateState = "failed"; }
+    }
+
+    static void DrawFooter() {
+        string latest = s_latestVersion;
+        ImGui.Separator();
+        ImGui.PushTextWrapPos();
+        try {
+            ImGui.TextDisabled(T("遇到问题或有功能建议？欢迎到 GitHub 或踩蘑菇反馈。",
+                "Found a problem or have a suggestion? Please report it on GitHub or Caimogu."));
+        } finally { ImGui.PopTextWrapPos(); }
+        ImGui.TextDisabled(T("作者", "Author") + "：夜曲_flac");
+        ImGui.SameLine(); ImGui.TextDisabled("|");
+        ImGui.SameLine(); ImGui.TextDisabled(T("反馈与发布", "Feedback / Releases") + "：");
+        ImGui.SameLine(); Link("GitHub", RepositoryUrl);
+        ImGui.SameLine(); ImGui.TextDisabled("/");
+        ImGui.SameLine(); Link(T("踩蘑菇（中文）", "Caimogu (Chinese)"), CaimoguUrl);
+        ImGui.SameLine(); ImGui.TextDisabled("|");
+        ImGui.SameLine(); ImGui.TextDisabled(T("联系", "Contact") + "：");
+        ImGui.SameLine(); Link("Bilibili", BilibiliUrl);
+        ImGui.SameLine(); CopyableText("Discord：" + DiscordName, DiscordName);
+        ImGui.SameLine(); ImGui.TextDisabled("|");
+        ImGui.SameLine();
+        if (latest != null && latest != CurrentVersion) {
+            ImGui.TextColored(WardrobeGold, T("发现新版本", "Update available") + " " + latest);
+            ImGui.SameLine(); Link(T("下载", "Download"), RepositoryUrl + "/releases/latest");
+        } else {
+            string suffix = s_updateState == "failed" ? T("（更新检查失败）", " (update check failed)")
+                : latest == null ? T("（检查更新中…）", " (checking for updates…)")
+                : T("（已是最新）", " (up to date)");
+            ImGui.TextDisabled(T("版本", "Version") + " " + CurrentVersion + suffix);
+        }
     }
 
     static void DrawReloadControls(bool busy) {
