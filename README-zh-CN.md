@@ -58,15 +58,27 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\tools\Uninstall-OWOTSAppearance.ps1 -GameDirectory "D:\你的游戏目录"
 ```
 
+### 手动安装（不用脚本）
+
+安装脚本只是"省事 + 可回滚"，不是必须。发行包目录结构与游戏目录一致（根目录含 `dinput8.dll`，以及 `reframework/`、`docs/`、`tools/`），所以**直接把压缩包解压到游戏根目录并覆盖同名文件**即可完成安装。使用脚本的唯一好处是：安装前自动备份被覆盖的文件、安装后可按哈希校验、并可一键回滚。手动安装时请自行先备份 `dinput8.dll` 与你原有的 `reframework/` 内容。
+
 ## 使用
 
 - 默认热键 `/`（可在设置中改为 F6–F12），`Esc` 关闭窗口。
 - 单击条目预览、双击应用；也可点击「应用此外观」。
 - 设置中可切换：界面语言、跟随存档记录外观、读档自动恢复（实验）、跟随原生菜单选择（实验）、独立骨架体型、无闪烁切换、安全热重载。
 
-## MOD 制作
+## MOD 制作与适配
 
-使用本仓库的 `mod-converter` 生成 `manifest.json` 与独立资源，然后把输出目录中的 `natives/` 与 `reframework/data/owots_appearance_lab/mods/<mod目录>/` 合并进游戏根目录。仅复制 manifest 会缺少模型资源。
+**保持你现有的工作流程即可**：只要你的 MOD 本来能在游戏里正常显示，就不需要重做网格、材质或骨骼，直接用 `mod-converter` 转换一次，就能得到衣橱可识别的独立条目。转换器会跟随资源依赖自动生成 `manifest.json` 与独立资产，原始 MOD 目录只读。
+
+1. 打开转换器（发行版 EXE，或 `python converter_gui.py` / `convert_mod.cmd`）；
+2. 选择输入（松散目录或普通 `.pak`）与输出父目录，可选填游戏原始目录以按需读取依赖；
+3. 点击「开始转换」，把输出目录内容按相同结构合并进游戏根目录，再在衣橱里「刷新已安装外观」。
+
+图形界面会跟随系统语言自动切换中英文。
+
+完整说明（manifest 契约、部位与分类、独立骨架、常见阻塞与工作原理）见 **[docs/OWOTS_MOD_AUTHORING.md](docs/OWOTS_MOD_AUTHORING.md)**。
 
 ```text
 <游戏目录>\reframework\data\owots_appearance_lab\mods\<mod目录>\manifest.json
@@ -81,6 +93,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 | `mod-converter` | 松散文件 / PAK 外观转换器与诊断报告 |
 | `release-tools` | 测试发行打包、安装、校验与回滚脚本 |
 | `special-adapters` | 专用脚本化 MOD 迁移（Scarlet、YoRHa 2B） |
+| `docs` | 需求、运行时/UI/存档研究、独立骨架契约与作者适配指南 |
 
 ## 构建
 

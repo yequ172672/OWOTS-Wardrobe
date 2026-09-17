@@ -58,15 +58,27 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\tools\Uninstall-OWOTSAppearance.ps1 -GameDirectory "D:\YourGameDir"
 ```
 
+### Manual install (no script)
+
+The script is a convenience, not a requirement. The package mirrors the game directory (root `dinput8.dll` plus `reframework/`, `docs/`, `tools/`), so **extracting the archive into the game root and overwriting the same names is a complete install**. The script only adds automatic backups, hash verification and one-step rollback. If you install manually, back up `dinput8.dll` and your existing `reframework/` content first.
+
 ## Usage
 
 - Default hotkey `/` (F6–F12 selectable in Settings), `Esc` closes the window.
 - Single-click an entry to preview, double-click (or "Apply") to wear it.
 - Settings include: interface language, record appearances with saves, auto-restore after load (experimental), follow explicit native-menu choices (experimental), independent skeleton, flicker-free switch, and safe hot reload.
 
-## Authoring MODs
+## Authoring & adapting MODs
 
-Use the bundled `mod-converter` to generate a `manifest.json` and independent assets, then merge the output `natives/` and `reframework/data/owots_appearance_lab/mods/<mod>/` into the game root. Copying only the manifest will miss the model resources.
+**Keep your existing workflow.** If your MOD already shows up correctly in game, you do not need to rebuild meshes, materials or rigs — convert it once with `mod-converter` and you get an independent entry the wardrobe understands. The converter follows the resource dependency graph, generates `manifest.json` plus private assets, and treats your source MOD directory as read-only.
+
+1. Open the converter (release EXE, or `python converter_gui.py` / `convert_mod.cmd`);
+2. Pick the input (loose folder or a plain `.pak`) and an output parent folder; optionally point at the original game install so dependencies can be read on demand;
+3. Click Start conversion, merge the output folder into the game root using the same structure, then use "Refresh installed appearances" in the wardrobe.
+
+The GUI follows the system language automatically (Chinese/English).
+
+Full details — manifest contract, parts and categories, standalone rigs, common blocks and how it works — are in **[docs/OWOTS_MOD_AUTHORING.md](docs/OWOTS_MOD_AUTHORING.md)**.
 
 ```text
 <GameDir>\reframework\data\owots_appearance_lab\mods\<mod>\manifest.json
@@ -81,6 +93,7 @@ Use the bundled `mod-converter` to generate a `manifest.json` and independent as
 | `mod-converter` | Loose/PAK appearance converter and diagnostic reports |
 | `release-tools` | Reproducible test-release packaging, install, verify and rollback helpers |
 | `special-adapters` | Dedicated scripted-MOD migrations (Scarlet, YoRHa 2B) |
+| `docs` | Requirements, runtime/UI/save research, skeleton contract and the authoring guide |
 
 ## Building
 

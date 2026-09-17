@@ -1,4 +1,4 @@
-"""Read original OWOTS game PAK resources without installing Blender or writing the game.
+﻿"""Read original OWOTS game PAK resources without installing Blender or writing the game.
 
 Uses the existing verified RE Asset Library TOC/chunk reader. It resolves exact
 path hashes, respects numbered patch priority, and materializes requested assets
@@ -7,12 +7,46 @@ reader, never by this reference provider.
 """
 from pathlib import Path
 import hashlib
+import locale
+import os
 import re
 import tempfile
 
 from owots_vendor.hashing.mmh3.pymmh3 import hashUTF16
 from owots_vendor.pak.file_re_pak import PakFile
 from owots_vendor.pak.entry_reader import readPakEntryData
+import warnings
+
+
+def _chinese_system() -> bool:
+    """Best-effort system-language detection; unknown locales fall back to English."""
+    candidates = []
+    try:
+        candidates.append(locale.getlocale()[0])
+    except (ValueError, TypeError):
+        pass
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                candidates.append(locale.getdefaultlocale()[0])
+    except (ValueError, TypeError, AttributeError):
+        pass
+    candidates.append(os.environ.get("LANG"))
+    candidates.append(os.environ.get("LANGUAGE"))
+    for value in candidates:
+        if value and str(value).lower().replace("-", "_").startswith(("zh", "chinese")):
+            return True
+    return False
+
+
+CHINESE_UI = _chinese_system()
+
+
+def T(zh: str, en: str) -> str:
+    return zh if CHINESE_UI else en
+
 
 DEFAULT_VERSIONS = {'.pfb': '18', '.user': '3', '.mesh': '260209350', '.mdf2': '51',
                     '.tex': '251111100', '.chain2': '17', '.fbxskel': '7', '.motbank': '4'}
@@ -65,7 +99,7 @@ class GamePakReference:
             return (1 if match else 0, int(match[1]) if match else 0, path.name.casefold())
         archives = sorted(base, key=order) + sorted(dlc, key=lambda path: path.as_posix().casefold())
         if not archives:
-            raise ValueError('原始游戏目录未找到 re_chunk_*.pak；请选择游戏目录或已解包资源目录')
+            raise ValueError(T('原始游戏目录未找到 re_chunk_*.pak；请选择游戏目录或已解包资源目录', 'No re_chunk_*.pak found in the original game directory; choose the game directory or an extracted resource directory'))
         for path in archives:
             if path.is_symlink() or not path.resolve().is_relative_to(self.root):
                 raise ValueError('Reference PAK escaped the selected game directory')
@@ -79,7 +113,7 @@ class GamePakReference:
             manifest_hash = pak_hash('__MANIFEST/MANIFEST.TXT')
             if any(((entry.hashNameLower << 32) | entry.hashNameUpper) == manifest_hash
                    for entry in pak.toc.entryList):
-                self._info('GAME_MOD_PAK_SKIPPED', '参考目录内的 MOD PAK 已排除，请使用未修改的原始游戏资源', path=str(path))
+                self._info('GAME_MOD_PAK_SKIPPED', T('参考目录内的 MOD PAK 已排除，请使用未修改的原始游戏资源', 'A MOD PAK inside the reference directory was excluded; use unmodified original game resources'), path=str(path))
                 continue
             own_hashes = set()
             for entry in pak.toc.entryList:
@@ -90,7 +124,7 @@ class GamePakReference:
                 self.entries[key] = (path, entry)
             self.archives[path] = pak.chunkTable
             self.source_stats[path] = (path.stat().st_size, path.stat().st_mtime_ns)
-            self._info('GAME_PAK_INDEX', '已只读索引原始游戏 PAK', path=str(path), entries=len(own_hashes))
+            self._info('GAME_PAK_INDEX', T('已只读索引原始游戏 PAK', 'Indexed the original game PAK read-only'), path=str(path), entries=len(own_hashes))
 
     def _resolve(self, logical, streaming):
         logical = str(logical).replace('\\', '/')
@@ -108,7 +142,7 @@ class GamePakReference:
             if key in self.entries:
                 matches[(key, version)] = (physical, version, self.entries[key])
         if len(matches) > 1:
-            raise ValueError('多个实际游戏资源版本匹配，不能猜选：' + logical)
+            raise ValueError(T('多个实际游戏资源版本匹配，不能猜选：' + logical, 'Multiple actual game resource versions match; cannot guess: ' + logical))
         return next(iter(matches.values()), None)
 
     def contains(self, logical, streaming=False):
@@ -124,9 +158,9 @@ class GamePakReference:
             return None
         physical, version, (archive, entry) = resolved
         if (archive.stat().st_size, archive.stat().st_mtime_ns) != self.source_stats[archive]:
-            raise ValueError('原始游戏 PAK 在转换期间发生变化，请重新分析')
+            raise ValueError(T('原始游戏 PAK 在转换期间发生变化，请重新分析', 'The original game PAK changed during conversion; analyze again'))
         if entry.decompressedSize < 0 or entry.decompressedSize > self.max_asset_bytes:
-            raise ValueError('参考资源大小超出单文件读取上限：' + physical)
+            raise ValueError(T('参考资源大小超出单文件读取上限：' + physical, 'Reference resource size exceeds the single-file read limit: ' + physical))
         destination = self.cache_root / physical.lower()
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.resolve().is_relative_to(self.cache_root):
@@ -134,11 +168,11 @@ class GamePakReference:
         with archive.open('rb') as stream:
             data = readPakEntryData(entry, stream, self.archives[archive])
         if len(data) != entry.decompressedSize:
-            raise ValueError('原始资源解包长度不匹配：' + physical)
+            raise ValueError(T('原始资源解包长度不匹配：' + physical, 'Original resource unpacked length mismatch: ' + physical))
         with destination.open('xb') as stream:
             stream.write(data)
         self.materialized[key] = (destination, version)
-        self._info('GAME_RESOURCE_VERIFIED', '已从原始游戏 PAK 验证并读取依赖', path=physical,
+        self._info('GAME_RESOURCE_VERIFIED', T('已从原始游戏 PAK 验证并读取依赖', 'Verified and read a dependency from the original game PAK'), path=physical,
                    bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
         return destination, version
 

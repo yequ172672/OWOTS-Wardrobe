@@ -12,12 +12,14 @@ repository on 2026-09-16 so the MCP checkout stays upstream-focused.
 | `mod-converter` | Standalone loose/PAK appearance converter and diagnostic reports |
 | `release-tools` | Reproducible OWOTS test-release packaging, install, verify and rollback helpers |
 | `special-adapters` | Dedicated scripted-MOD migrations (Scarlet, YoRHa 2B) kept separate from the converter |
+| `docs` | Requirements, runtime/UI/save research, the independent-skeleton contract and the MOD authoring guide |
 
 ## Key Files
 | File | Purpose |
 | --- | --- |
-| `OWOTS_INDEPENDENT_SKELETON.md` | Manifest-driven independent actor skeleton contract, conversion scope and manual acceptance |
-| `OWOTS_APPEARANCE_*` / `OWOTS_WARDROBE_*` | Appearance system requirements, runtime research, UI/save research, user guide and export plan |
+| `docs/OWOTS_INDEPENDENT_SKELETON.md` | Manifest-driven independent actor skeleton contract, conversion scope and manual acceptance |
+| `docs/OWOTS_MOD_AUTHORING.md` | MOD authoring/adaptation guide: converter workflow, manifest contract, principles |
+| `docs/OWOTS_APPEARANCE_*` / `docs/OWOTS_WARDROBE_*` | Appearance system requirements, runtime research, UI/save research, user guide and export plan |
 | `appearance-core/build_lab.py` | Bundles the tested core into the single-source plugin (`reframework/plugins/source/OWOTSAppearanceLab.cs`) |
 
 ## Dependencies

@@ -137,7 +137,7 @@ foreach ($scriptName in @('yorha_2b_skeleton_adapter.lua')) {
     $scriptRelative = 'reframework/autorun/' + $scriptName
     Copy-Payload (Join-Path $repoRoot $scriptRelative) $scriptRelative $scriptRelative $payload
 }
-Copy-Payload (Join-Path $repoRoot 'OWOTS_INDEPENDENT_SKELETON.md') 'docs/OWOTS_INDEPENDENT_SKELETON.md' $null $payload
+Copy-Payload (Join-Path $repoRoot 'docs\OWOTS_INDEPENDENT_SKELETON.md') 'docs/OWOTS_INDEPENDENT_SKELETON.md' $null $payload
 
 $readme = Join-Path $PSScriptRoot 'README-zh-CN.md'
 $notice = Join-Path $PSScriptRoot 'THIRD-PARTY-NOTICES.md'

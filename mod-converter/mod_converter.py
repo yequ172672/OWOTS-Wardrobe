@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """OWOTS normal-MOD to wardrobe-MOD converter.
 
 This module intentionally uses only the Python standard library.  It is the
@@ -22,6 +22,7 @@ import binascii
 import dataclasses
 import hashlib
 import json
+import locale
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -34,6 +35,7 @@ import tempfile
 import textwrap
 import zlib
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+import warnings
 
 try:
     # Kept optional so the single-file source CLI still diagnoses a missing
@@ -41,6 +43,34 @@ try:
     from game_pak_reference import GamePakReference  # type: ignore
 except ImportError:  # pragma: no cover - exercised by minimal source copies
     GamePakReference = None  # type: ignore[assignment,misc]
+
+
+def _chinese_system() -> bool:
+    """Best-effort system-language detection; unknown locales fall back to English."""
+    candidates = []
+    try:
+        candidates.append(locale.getlocale()[0])
+    except (ValueError, TypeError):
+        pass
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            candidates.append(locale.getdefaultlocale()[0])
+    except (ValueError, TypeError, AttributeError):
+        pass
+    candidates.append(os.environ.get("LANG"))
+    candidates.append(os.environ.get("LANGUAGE"))
+    for value in candidates:
+        if value and str(value).lower().replace("-", "_").startswith(("zh", "chinese")):
+            return True
+    return False
+
+
+CHINESE_UI = _chinese_system()
+
+
+def T(zh: str, en: str) -> str:
+    return zh if CHINESE_UI else en
 
 
 TOOL_VERSION = "0.1.0"
@@ -505,15 +535,15 @@ class SourceFiles:
 
     def add_file(self, path: Path, relative: str) -> None:
         if path.is_symlink():
-            self.report.warn("SYMLINK_SKIPPED", "为避免逃逸输入目录，跳过符号链接", relative)
+            self.report.warn("SYMLINK_SKIPPED", T("为避免逃逸输入目录，跳过符号链接", "Skipping symbolic link that could escape the input directory"), relative)
             return
         try:
             resolved = path.resolve(strict=True)
         except OSError as error:
-            self.report.error("INPUT_FILE_UNREADABLE", f"输入文件无法读取：{error}", relative)
+            self.report.error("INPUT_FILE_UNREADABLE", T(f"输入文件无法读取：{error}", f"Failed to read input file: {error}"), relative)
             return
         if not resolved.is_relative_to(self.root):
-            self.report.error("INPUT_PATH_ESCAPE", "输入目录含有指向目录外的 junction/链接，已拒绝", relative)
+            self.report.error("INPUT_PATH_ESCAPE", T("输入目录含有指向目录外的 junction/链接，已拒绝", "Input directory contains a junction/link pointing outside it; rejected"), relative)
             return
         try:
             normalized = strip_native_prefix(relative)
@@ -522,22 +552,22 @@ class SourceFiles:
             self.other_files.append(relative.replace("\\", "/"))
             return
         if path.stat().st_size == 0:
-            self.report.warn("EMPTY_RESOURCE", "跳过空资源文件", relative)
+            self.report.warn("EMPTY_RESOURCE", T("跳过空资源文件", "Skipping empty resource file"), relative)
             return
         asset = Asset(logical, version, streaming, resolved, self.origin, resolved.stat().st_size)
         expected_version = OWOTS_RESOURCE_VERSIONS.get(asset.extension)
         if expected_version is not None and version != expected_version:
             self.report.error("RESOURCE_VERSION_UNSUPPORTED",
-                              "资源版本与当前 OWOTS 读写器不匹配；不能仅改文件后缀后转换", relative,
+                              T("资源版本与当前 OWOTS 读写器不匹配；不能仅改文件后缀后转换", "Resource version does not match the current OWOTS reader/writer; renaming the file suffix is not a conversion"), relative,
                               actualVersion=version, supportedVersion=expected_version)
             return
         key = asset.variant_key
         old = self.assets.get(key)
         if old:
             if old.sha256 == asset.sha256:
-                self.report.info("DUPLICATE_IDENTICAL", "忽略重复的相同资源", relative)
+                self.report.info("DUPLICATE_IDENTICAL", T("忽略重复的相同资源", "Ignoring duplicate identical resource"), relative)
             else:
-                self.report.error("DUPLICATE_RESOURCE", "同一逻辑资源存在不同内容，无法安全选择", relative,
+                self.report.error("DUPLICATE_RESOURCE", T("同一逻辑资源存在不同内容，无法安全选择", "The same logical resource has different content; cannot choose safely"), relative,
                                   logical=logical, first=str(old.path))
             return
         self.assets[key] = asset
@@ -562,9 +592,9 @@ class SourceFiles:
             lower = relative.casefold()
             if (suffix in SKIPPED_SUFFIXES or "/reframework/" in "/" + lower or
                     lower.startswith("reframework/") or "/plugins/" in "/" + lower):
-                self.report.warn("OPTIONAL_FILE_OMITTED", "脚本、插件或元数据不会盲目携带到衣橱包", relative)
+                self.report.warn("OPTIONAL_FILE_OMITTED", T("脚本、插件或元数据不会盲目携带到衣橱包", "Scripts, plugins or metadata are not blindly carried into the wardrobe package"), relative)
             else:
-                self.report.info("NON_RESOURCE_OMITTED", "未识别为 OWOTS 资源，未复制", relative)
+                self.report.info("NON_RESOURCE_OMITTED", T("未识别为 OWOTS 资源，未复制", "Not recognized as an OWOTS resource; not copied"), relative)
 
     def get(self, logical: str, streaming: bool = False) -> Asset | None:
         return self.assets.get((logical.casefold(), streaming))
@@ -591,7 +621,7 @@ def parse_modinfo(root: Path, report: Report) -> ModInfo:
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as error:
-        report.warn("MODINFO_READ_FAILED", f"无法读取 modinfo：{error}", str(path))
+        report.warn("MODINFO_READ_FAILED", T(f"无法读取 modinfo：{error}", f"Failed to read modinfo: {error}"), str(path))
         return ModInfo({})
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -603,7 +633,7 @@ def parse_modinfo(root: Path, report: Report) -> ModInfo:
         if "=" not in line:
             # Many old mods append Markdown/Chinese prose.  Do not make a
             # valid conversion fail because configparser rejects that prose.
-            report.info("MODINFO_FREE_TEXT", "忽略 modinfo 中无键值的自由文本", f"{path}:{number}")
+            report.info("MODINFO_FREE_TEXT", T("忽略 modinfo 中无键值的自由文本", "Ignoring free text without a key/value in modinfo"), f"{path}:{number}")
             continue
         key, value = line.split("=", 1)
         key = key.strip().casefold()
@@ -611,7 +641,7 @@ def parse_modinfo(root: Path, report: Report) -> ModInfo:
             # Only common fields from the root section are meaningful here.
             continue
         if key in values:
-            report.warn("MODINFO_DUPLICATE", "重复 modinfo 字段，使用第一项", f"{path}:{number}", key=key)
+            report.warn("MODINFO_DUPLICATE", T("重复 modinfo 字段，使用第一项", "Duplicate modinfo field; using the first entry"), f"{path}:{number}", key=key)
             continue
         if key in {"name", "version", "author", "description", "homepage", "screenshot", "icon"}:
             values[key] = value.strip()
@@ -622,7 +652,7 @@ def parse_modinfo(root: Path, report: Report) -> ModInfo:
         if candidate.is_file() and candidate.is_relative_to(root.resolve()):
             screenshot = candidate
         else:
-            report.warn("SCREENSHOT_MISSING", "modinfo 指定的预览图不存在，已省略", name)
+            report.warn("SCREENSHOT_MISSING", T("modinfo 指定的预览图不存在，已省略", "Preview image specified by modinfo does not exist; omitted"), name)
     if screenshot is None:
         for candidate in sorted(root.glob("preview.*")):
             if candidate.suffix.casefold() in {".png", ".jpg", ".jpeg"}:
@@ -697,13 +727,13 @@ class HashIndex:
         try:
             path = validate_hash_path(path)
         except ValueError as error:
-            self.report.error("HASH_PATH_INVALID", f"文件列表路径不安全或没有支持的版本后缀：{error}", path)
+            self.report.error("HASH_PATH_INVALID", T(f"文件列表路径不安全或没有支持的版本后缀：{error}", f"File list path is unsafe or lacks a supported version suffix: {error}"), path)
             return
         key = native_hash(path)
         old = self.by_hash.get(key)
         if old and old.casefold() != path.casefold():
             self.collisions.add(key)
-            self.report.error("PAK_HASH_COLLISION", "文件列表中存在相同 hash 的不同路径", path, first=old)
+            self.report.error("PAK_HASH_COLLISION", T("文件列表中存在相同 hash 的不同路径", "File list contains different paths with the same hash"), path, first=old)
         else:
             self.by_hash[key] = path
 
@@ -715,7 +745,7 @@ class HashIndex:
                 for line in stream:
                     index.add(line)
         except OSError as error:
-            report.error("HASH_LIST_READ_FAILED", f"无法读取 PAK 文件列表：{error}", str(path))
+            report.error("HASH_LIST_READ_FAILED", T(f"无法读取 PAK 文件列表：{error}", f"Failed to read PAK file list: {error}"), str(path))
         return index
 
     @classmethod
@@ -724,19 +754,19 @@ class HashIndex:
         try:
             value = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as error:
-            report.error("HASH_MAP_READ_FAILED", f"无法读取哈希映射：{error}", str(path))
+            report.error("HASH_MAP_READ_FAILED", T(f"无法读取哈希映射：{error}", f"Failed to read hash map: {error}"), str(path))
             return index
         if not isinstance(value, dict):
-            report.error("HASH_MAP_FORMAT", "哈希映射必须是对象", str(path))
+            report.error("HASH_MAP_FORMAT", T("哈希映射必须是对象", "Hash map must be an object"), str(path))
             return index
         for raw_hash, raw_path in value.items():
             if not isinstance(raw_hash, str) or not isinstance(raw_path, str):
-                report.error("HASH_MAP_FORMAT", "映射键和值必须是文本", str(path))
+                report.error("HASH_MAP_FORMAT", T("映射键和值必须是文本", "Map keys and values must be text"), str(path))
                 continue
             try:
                 number = int(raw_hash.removeprefix("0x"), 16)
                 if not 0 <= number <= 0xFFFFFFFFFFFFFFFF:
-                    raise ValueError("hash 超出 64 位范围")
+                    raise ValueError(T("hash 超出 64 位范围", "hash exceeds the 64-bit range"))
                 lower = number & 0xFFFFFFFF
                 upper = (number >> 32) & 0xFFFFFFFF
                 normalized = raw_path.replace("\\", "/")
@@ -744,7 +774,7 @@ class HashIndex:
                     raise ValueError("path must begin with natives/stm/")
                 normalized = validate_hash_path(normalized)
                 if native_hash(normalized) != (lower, upper):
-                    raise ValueError("hash 与路径不匹配")
+                    raise ValueError(T("hash 与路径不匹配", "hash does not match the path"))
                 key = (lower, upper)
                 old = index.by_hash.get(key)
                 if old and old.casefold() != normalized.casefold():
@@ -791,24 +821,24 @@ class PakArchive:
     def parse(self) -> None:
         size = self.path.stat().st_size
         if size < 16:
-            raise ConversionError("PAK 文件小于 16 字节")
+            raise ConversionError(T("PAK 文件小于 16 字节", "PAK file is smaller than 16 bytes"))
         with self.path.open("rb") as stream:
             header = stream.read(16)
             if header[:4] != b"KPKA":
-                raise ConversionError("不是 KPKA PAK 文件")
+                raise ConversionError(T("不是 KPKA PAK 文件", "Not a KPKA PAK file"))
             # The four-byte KPKA magic precedes the 12-byte version/feature/
             # count/fingerprint header.  Keeping this slice explicit prevents
             # accidentally accepting a short or shifted header.
             self.major, self.minor, self.feature, self.count, self.fingerprint = struct.unpack("<BBHii", header[4:])
             if self.major not in (2, 4) or self.minor not in (0, 1, 2):
-                raise ConversionError(f"不支持的 PAK 版本 {self.major}.{self.minor}")
+                raise ConversionError(T(f"不支持的 PAK 版本 {self.major}.{self.minor}", f"Unsupported PAK version {self.major}.{self.minor}"))
             entry_size = 24 if self.major == 2 else 48
             table_end = 16 + self.count * entry_size
             if self.count < 0 or self.count > 10_000_000 or table_end > size:
-                raise ConversionError("PAK 条目数量或目录大小越界")
+                raise ConversionError(T("PAK 条目数量或目录大小越界", "PAK entry count or directory size is out of bounds"))
             table = stream.read(self.count * entry_size)
             if self.feature != 0:
-                self.report.warn("PAK_FEATURE", "PAK 使用带附加目录特性的格式；转换只允许已验证的普通条目",
+                self.report.warn("PAK_FEATURE", T("PAK 使用带附加目录特性的格式；转换只允许已验证的普通条目", "PAK uses a format with extra directory features; conversion only allows verified ordinary entries"),
                                  str(self.path), feature=self.feature)
                 # Protected/custom PAKs are diagnosed before reading their
                 # indexed table.  Feature 40 is a game archive and has an
@@ -822,28 +852,28 @@ class PakArchive:
                 if self.major == 2:
                     offset, uncompressed, lower, upper = struct.unpack("<qqII", chunk)
                     if offset < table_end or uncompressed < 0:
-                        raise ConversionError(f"PAK 条目 {index} 的偏移或长度越界")
+                        raise ConversionError(T(f"PAK 条目 {index} 的偏移或长度越界", f"PAK entry {index} has an out-of-range offset or length"))
                     if uncompressed > MAX_PAK_ENTRY_BYTES or offset + uncompressed > size:
-                        raise ConversionError(f"PAK 条目 {index} 超出安全大小或文件边界")
+                        raise ConversionError(T(f"PAK 条目 {index} 超出安全大小或文件边界", f"PAK entry {index} exceeds the safe size or file boundary"))
                     total_decompressed += uncompressed
                     if total_decompressed > MAX_PAK_TOTAL_BYTES:
-                        raise ConversionError("PAK 声明的总解压大小超过安全上限")
+                        raise ConversionError(T("PAK 声明的总解压大小超过安全上限", "Declared total decompressed size of the PAK exceeds the safe limit"))
                     entries.append(PakEntry(lower, upper, offset, uncompressed, uncompressed, 0, 0, 0, 0))
                 else:
                     lower, upper, offset, compressed, uncompressed, attributes, checksum = struct.unpack("<IIqqqqQ", chunk)
                     if min(offset, compressed, uncompressed) < 0:
-                        raise ConversionError(f"PAK 条目 {index} 含负值范围")
+                        raise ConversionError(T(f"PAK 条目 {index} 含负值范围", f"PAK entry {index} contains a negative range"))
                     if offset < table_end:
-                        raise ConversionError(f"PAK 条目 {index} 的数据偏移落在目录表内")
+                        raise ConversionError(T(f"PAK 条目 {index} 的数据偏移落在目录表内", f"PAK entry {index} data offset falls inside the directory table"))
                     if compressed > MAX_PAK_ENTRY_BYTES or uncompressed > MAX_PAK_ENTRY_BYTES:
-                        raise ConversionError(f"PAK 条目 {index} 超过单条资源安全大小")
+                        raise ConversionError(T(f"PAK 条目 {index} 超过单条资源安全大小", f"PAK entry {index} exceeds the per-resource safe size"))
                     compression = attributes & 0xF
                     encryption = (attributes >> 16) & 0xFF
                     if offset + compressed > size:
-                        raise ConversionError(f"PAK 条目 {index} 超出文件边界")
+                        raise ConversionError(T(f"PAK 条目 {index} 超出文件边界", f"PAK entry {index} exceeds the file boundary"))
                     total_decompressed += uncompressed
                     if total_decompressed > MAX_PAK_TOTAL_BYTES:
-                        raise ConversionError("PAK 声明的总解压大小超过安全上限")
+                        raise ConversionError(T("PAK 声明的总解压大小超过安全上限", "Declared total decompressed size of the PAK exceeds the safe limit"))
                     entries.append(PakEntry(lower, upper, offset, compressed, uncompressed,
                                              attributes, checksum, compression, encryption))
             self.entries = entries
@@ -887,16 +917,16 @@ class PakArchive:
 
     def read_payload(self, entry: PakEntry) -> bytes:
         if self.feature != 0:
-            raise ConversionError("PAK 带加密/分块目录，不能作为普通 MOD 解包")
+            raise ConversionError(T("PAK 带加密/分块目录，不能作为普通 MOD 解包", "PAK has an encrypted/chunked directory and cannot be unpacked as an ordinary MOD"))
         if entry.encryption:
-            raise ConversionError("PAK 条目带资源加密标志，拒绝猜测密钥")
+            raise ConversionError(T("PAK 条目带资源加密标志，拒绝猜测密钥", "PAK entry has a resource encryption flag; refusing to guess the key"))
         if entry.compression not in (0, 1, 2):
-            raise ConversionError(f"不支持的 PAK 压缩方式 {entry.compression}；请先用可信工具解包")
+            raise ConversionError(T(f"不支持的 PAK 压缩方式 {entry.compression}；请先用可信工具解包", f"Unsupported PAK compression method {entry.compression}; unpack with a trusted tool first"))
         with self.path.open("rb") as stream:
             stream.seek(entry.offset)
             payload = stream.read(entry.compressed_size)
         if len(payload) != entry.compressed_size:
-            raise ConversionError("PAK 条目读取不完整")
+            raise ConversionError(T("PAK 条目读取不完整", "PAK entry read is incomplete"))
         if entry.compression == 1:
             try:
                 decoder = zlib.decompressobj(-15)
@@ -907,16 +937,16 @@ class PakArchive:
                     payload += decoder.flush(max(entry.decompressed_size + 1 - len(payload), 0))
                 if (len(payload) > entry.decompressed_size or not decoder.eof or
                         decoder.unused_data or decoder.unconsumed_tail):
-                    raise ConversionError("PAK DEFLATE 流未在声明长度内完整结束")
+                    raise ConversionError(T("PAK DEFLATE 流未在声明长度内完整结束", "PAK DEFLATE stream did not end completely within the declared length"))
             except zlib.error as error:
-                raise ConversionError(f"PAK DEFLATE 解压失败：{error}") from error
+                raise ConversionError(T(f"PAK DEFLATE 解压失败：{error}", f"PAK DEFLATE decompression failed: {error}")) from error
             except ConversionError:
                 raise
         elif entry.compression == 2:
             try:
                 import zstandard as zstd  # type: ignore
             except ImportError as error:
-                raise ConversionError("PAK 使用 Zstandard；请安装 requirements.txt 中的 zstandard，或使用发行版 EXE") from error
+                raise ConversionError(T("PAK 使用 Zstandard；请安装 requirements.txt 中的 zstandard，或使用发行版 EXE", "PAK uses Zstandard; install zstandard from requirements.txt or use the release EXE")) from error
             try:
                 # Some zstandard frames carry their own content size and the
                 # Python binding may honor that size before max_output_size.
@@ -927,18 +957,18 @@ class PakArchive:
                 unknown = getattr(zstd, "CONTENTSIZE_UNKNOWN", (1 << 64) - 1)
                 invalid = getattr(zstd, "CONTENTSIZE_ERROR", (1 << 64) - 2)
                 if frame_size not in (unknown, invalid) and frame_size != entry.decompressed_size:
-                    raise ConversionError("PAK Zstandard frame 长度与目录声明不一致")
+                    raise ConversionError(T("PAK Zstandard frame 长度与目录声明不一致", "PAK Zstandard frame length does not match the directory declaration"))
                 payload = zstd.ZstdDecompressor().decompress(
                     payload, max_output_size=entry.decompressed_size + 1,
                     allow_extra_data=False)
             except (zstd.ZstdError, ValueError) as error:  # type: ignore[name-defined]
-                raise ConversionError(f"PAK Zstandard 解压失败：{error}") from error
+                raise ConversionError(T(f"PAK Zstandard 解压失败：{error}", f"PAK Zstandard decompression failed: {error}")) from error
         if len(payload) != entry.decompressed_size:
-            raise ConversionError("PAK 条目解压长度与目录不一致")
+            raise ConversionError(T("PAK 条目解压长度与目录不一致", "PAK entry decompressed length does not match the directory"))
         if entry.checksum:
             # RE PAK checksums differ across game versions.  A non-zero value
             # without a matching implementation is never called verified.
-            self.report.warn("PAK_CHECKSUM_UNVERIFIED", "PAK 条目 checksum 非零，未声称校验通过",
+            self.report.warn("PAK_CHECKSUM_UNVERIFIED", T("PAK 条目 checksum 非零，未声称校验通过", "PAK entry checksum is non-zero; verification is not claimed"),
                              str(self.path), checksum=f"0x{entry.checksum:016x}")
         return payload
 
@@ -1002,23 +1032,23 @@ class AppearanceWorker:
                 process = subprocess.run(command, capture_output=True, timeout=self.timeout,
                                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except (OSError, subprocess.TimeoutExpired) as error:
-                raise ConversionError(f"RSZ worker 未完成：{error}") from error
+                raise ConversionError(T(f"RSZ worker 未完成：{error}", f"RSZ worker did not complete: {error}")) from error
             if process.returncode:
                 detail = (process.stderr + process.stdout).decode("utf-8", errors="replace")[-6000:]
-                raise ConversionError(f"RSZ worker 失败：{detail}")
+                raise ConversionError(T(f"RSZ worker 失败：{detail}", f"RSZ worker failed: {detail}"))
             try:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
-                raise ConversionError(f"RSZ worker 返回无效报告：{error}") from error
+                raise ConversionError(T(f"RSZ worker 返回无效报告：{error}", f"RSZ worker returned an invalid report: {error}")) from error
             before = hashlib.sha256(source.read_bytes()).hexdigest()
             if result.get("SourceSha256") != before:
-                raise ConversionError("RSZ worker 未证明输入文件保持不变")
+                raise ConversionError(T("RSZ worker 未证明输入文件保持不变", "RSZ worker did not prove the input file was left unchanged"))
             if output:
                 if result.get("ReadbackVerified") is not True or not output_temp or not output_temp.is_file():
-                    raise ConversionError("RSZ worker 未验证输出回读")
+                    raise ConversionError(T("RSZ worker 未验证输出回读", "RSZ worker did not verify the output readback"))
                 payload = output_temp.read_bytes()
                 if hashlib.sha256(payload).hexdigest() != result.get("OutputSha256"):
-                    raise ConversionError("RSZ worker 输出摘要不一致")
+                    raise ConversionError(T("RSZ worker 输出摘要不一致", "RSZ worker output digest mismatch"))
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with output.open("xb") as stream:
                     stream.write(payload)
@@ -1088,10 +1118,10 @@ class GameReference:
             try:
                 resolved = path.resolve(strict=True)
             except OSError as error:
-                self.report.error("REFERENCE_FILE_UNREADABLE", f"参考文件无法读取：{error}", rel)
+                self.report.error("REFERENCE_FILE_UNREADABLE", T(f"参考文件无法读取：{error}", f"Failed to read reference file: {error}"), rel)
                 continue
             if not resolved.is_relative_to(self.root):
-                self.report.error("REFERENCE_PATH_ESCAPE", "参考目录含有指向目录外的 junction/链接，已跳过", rel)
+                self.report.error("REFERENCE_PATH_ESCAPE", T("参考目录含有指向目录外的 junction/链接，已跳过", "Reference directory contains a junction/link pointing outside it; skipped"), rel)
                 continue
             try:
                 normalized = strip_native_prefix(rel)
@@ -1104,7 +1134,7 @@ class GameReference:
     def find(self, logical: str, streaming: bool = False) -> Asset | None:
         values = self._index.get((logical.casefold(), streaming), [])
         if len(values) > 1:
-            self.report.error("GAME_VERSION_AMBIGUOUS", "参考目录中存在多个物理版本，无法猜选", logical,
+            self.report.error("GAME_VERSION_AMBIGUOUS", T("参考目录中存在多个物理版本，无法猜选", "Multiple physical versions exist in the reference directory; cannot choose by guessing"), logical,
                               versions=[asset.version for asset in values])
             return None
         if values:
@@ -1149,7 +1179,7 @@ class InputBundle:
         if self.root.suffix.casefold() == ".pak":
             self._load_pak()
             return
-        raise ConversionError("输入必须是已解包 MOD 目录或 .pak 文件")
+        raise ConversionError(T("输入必须是已解包 MOD 目录或 .pak 文件", "Input must be an extracted MOD directory or a .pak file"))
 
     def _load_pak(self) -> None:
         archive = self.archive = PakArchive(self.root, self.report)
@@ -1158,15 +1188,15 @@ class InputBundle:
         if protected:
             self.report.error(
                 "PAK_PROTECTED_CUSTOM",
-                "检测到 WOTSPK01/WOTSPV03 专用加密封套；不能把标准目录中的截图/说明误当成 MOD 资源。",
+                T("检测到 WOTSPK01/WOTSPV03 专用加密封套；不能把标准目录中的截图/说明误当成 MOD 资源。", "Detected a WOTSPK01/WOTSPV03 proprietary encrypted envelope; screenshots/readme in the standard directory must not be mistaken for MOD resources."),
                 str(self.root), **protected,
             )
             self.report.info("PAK_PROTECTED_NEXT_STEP",
-                             "请向 MOD 作者索取未加密 PAK/解包版，或提供作者授权的解密插件与路径映射。工具不会猜密钥。")
+                             T("请向 MOD 作者索取未加密 PAK/解包版，或提供作者授权的解密插件与路径映射。工具不会猜密钥。", "Ask the MOD author for an unencrypted PAK/extracted version, or provide the author's authorized decryption plugin and path mapping. This tool will not guess keys."))
             return
         if archive.feature != 0:
             self.report.error("PAK_FEATURE_UNSUPPORTED",
-                              "该 PAK 目录/资源带加密或分块特性，当前普通 PAK 管线不会假装已解包。",
+                              T("该 PAK 目录/资源带加密或分块特性，当前普通 PAK 管线不会假装已解包。", "This PAK's directory/resources have encryption or chunking features; the ordinary PAK pipeline will not pretend they are already extracted."),
                               str(self.root), feature=archive.feature)
             return
         self.temp = tempfile.TemporaryDirectory(prefix="owots-pak-extract-")
@@ -1205,7 +1235,7 @@ class InputBundle:
         if embedded_paths:
             if self.hash_index is None:
                 self.hash_index = HashIndex(self.report)
-                self.report.info("PAK_EMBEDDED_MANIFEST", "已从 PAK 内置清单建立精确路径索引",
+                self.report.info("PAK_EMBEDDED_MANIFEST", T("已从 PAK 内置清单建立精确路径索引", "Built an exact path index from the PAK embedded manifest"),
                                  str(self.root), entries=len(embedded_paths))
             for path in embedded_paths:
                 self.hash_index.add(path)
@@ -1218,14 +1248,14 @@ class InputBundle:
             if data_entries != len(embedded_paths):
                 self.report.error(
                     "PAK_MANIFEST_COVERAGE",
-                    "PAK 内置清单没有覆盖全部数据条目，不能安全判断哪些资源属于 MOD。",
+                    T("PAK 内置清单没有覆盖全部数据条目，不能安全判断哪些资源属于 MOD。", "The PAK embedded manifest does not cover every data entry; cannot safely determine which resources belong to the MOD."),
                     str(self.root), manifestEntries=len(embedded_paths),
                     dataEntries=data_entries,
                 )
                 return
         if not self.hash_index:
             self.report.error("PAK_HASH_INDEX_REQUIRED",
-                              "普通 PAK 只有 hash 路径；请设置 --hash-list/--hash-map，或使用包含 __MANIFEST/MANIFEST.TXT 的 PAK。",
+                              T("普通 PAK 只有 hash 路径；请设置 --hash-list/--hash-map，或使用包含 __MANIFEST/MANIFEST.TXT 的 PAK。", "An ordinary PAK only has hashed paths; set --hash-list/--hash-map, or use a PAK containing __MANIFEST/MANIFEST.TXT."),
                               str(self.root))
             return
         resolved_entries = 0
@@ -1235,7 +1265,7 @@ class InputBundle:
             path = self.hash_index.resolve(entry.lower, entry.upper)
             if not path:
                 self.report.error("PAK_HASH_UNRESOLVED",
-                                  "PAK 条目 hash 未在可信路径索引中解析，转换已阻止。",
+                                  T("PAK 条目 hash 未在可信路径索引中解析，转换已阻止。", "PAK entry hash was not resolved in a trusted path index; conversion blocked."),
                                   str(self.root), index=number,
                                   hash=f"{entry.upper:08x}{entry.lower:08x}")
                 continue
@@ -1274,7 +1304,7 @@ def classify_part(logical: str) -> str | None:
 def category_for_parts(parts: Sequence[str]) -> str:
     categories = {PART_CATEGORY[part] for part in parts if part in PART_CATEGORY}
     if len(categories) != 1:
-        raise ConversionError("检测到多个衣橱分类；请用 --category 明确选择，避免把变体合并")
+        raise ConversionError(T("检测到多个衣橱分类；请用 --category 明确选择，避免把变体合并", "Multiple wardrobe categories detected; choose one explicitly with --category to avoid merging variants"))
     return next(iter(categories))
 
 
@@ -1284,11 +1314,11 @@ def mdf_dependencies(payload: bytes) -> tuple[str, ...]:
     try:
         from owots_vendor.workspace.appearance_mdf import texture_dependencies  # type: ignore
     except ImportError as error:
-        raise ConversionError("MDF2 依赖解析器未随工具安装；请把 vendor/appearance_mdf.py 放入发行包") from error
+        raise ConversionError(T("MDF2 依赖解析器未随工具安装；请把 vendor/appearance_mdf.py 放入发行包", "The MDF2 dependency parser is not installed with the tool; put vendor/appearance_mdf.py into the release package")) from error
     try:
         values = texture_dependencies(payload)
     except (OSError, ValueError, KeyError, IndexError, struct.error) as error:
-        raise ConversionError(f"MDF2 严格解析失败：{error}") from error
+        raise ConversionError(T(f"MDF2 严格解析失败：{error}", f"Strict MDF2 parsing failed: {error}")) from error
     return tuple(logical_path(value) for value in values)
 
 
@@ -1301,10 +1331,10 @@ class Converter:
             Path(args.template) if getattr(args, "template", None) else None,
         )
         if self.worker:
-            self.report.info("RSZ_WORKER", "已启用 AppearanceRsz 结构化资源读写器", str(self.worker.executable))
+            self.report.info("RSZ_WORKER", T("已启用 AppearanceRsz 结构化资源读写器", "AppearanceRsz structured-resource reader/writer enabled"), str(self.worker.executable))
         else:
             self.report.warn("RSZ_WORKER_MISSING",
-                             "未找到 AppearanceRsz；遇到 PFB/USER 时会安全停止，避免伪造结构化输出。")
+                             T("未找到 AppearanceRsz；遇到 PFB/USER 时会安全停止，避免伪造结构化输出。", "AppearanceRsz not found; PFB/USER inputs will stop safely instead of faking structured output."))
         self.modinfo: ModInfo | None = None
         self.bundle: InputBundle | None = None
         self.game: GameReference | None = None
@@ -1341,7 +1371,7 @@ class Converter:
             candidates = self._candidates()
             self.report.stats["partCandidates"] = candidates
             for logical, part in candidates:
-                self.report.info("PART_CANDIDATE", f"自动识别 {part} 资源", logical, part=part)
+                self.report.info("PART_CANDIDATE", T(f"自动识别 {part} 资源", f"Auto-detected {part} resource"), logical, part=part)
         if self.bundle.archive and self.bundle.archive.protected:
             self.report.stats["protectedPak"] = self.bundle.archive.protected
 
@@ -1368,12 +1398,15 @@ class Converter:
         if not dynamic:
             return
         self.report.stats["dynamicFiles"] = dynamic
-        message = (
+        message = T(
             "输入包含 Lua/原生插件等动态行为；静态衣橱 manifest 无法等价表达这些逻辑，"
-            "默认阻止转换。若确认只需要静态模型，请显式启用 --experimental-static-only。"
+            "默认阻止转换。若确认只需要静态模型，请显式启用 --experimental-static-only。",
+            "The input contains dynamic behavior such as Lua/native plugins; a static wardrobe "
+            "manifest cannot express that logic equivalently, so conversion is blocked by default. "
+            "If you are sure you only need the static model, enable --experimental-static-only explicitly.",
         )
         if getattr(self.args, "experimental_static_only", False):
-            self.report.warn("DYNAMIC_BEHAVIOR_STATIC_ONLY", message + " 当前已按实验静态模式继续。",
+            self.report.warn("DYNAMIC_BEHAVIOR_STATIC_ONLY", message + T(" 当前已按实验静态模式继续。", " Continuing in experimental static mode."),
                              dynamic[0], files=dynamic)
         else:
             self.report.error("DYNAMIC_BEHAVIOR_UNSUPPORTED", message, dynamic[0], files=dynamic)
@@ -1404,7 +1437,7 @@ class Converter:
             except (OSError, ValueError) as error:
                 self.actor_skeleton_candidates.append((asset, None))
                 self.report.error("ACTOR_SKELETON_INVALID",
-                                  f"独立 FBXSKEL 无法安全解析：{error}", asset.logical)
+                                  T(f"独立 FBXSKEL 无法安全解析：{error}", f"Cannot safely parse the standalone FBXSKEL: {error}"), asset.logical)
                 continue
             self.actor_skeleton_candidates.append((asset, info))
             summary = {
@@ -1417,19 +1450,19 @@ class Converter:
             if info.bone_count != ACTOR_SKELETON_BONE_COUNT:
                 self.report.error(
                     "ACTOR_SKELETON_TOPOLOGY_UNSUPPORTED",
-                    "独立骨架不是 v1 支持的 93 关节角色骨架；追加关节需要专用 actor 适配器。",
+                    T("独立骨架不是 v1 支持的 93 关节角色骨架；追加关节需要专用 actor 适配器。", "The standalone rig is not a v1-supported 93-joint actor skeleton; extra joints require a dedicated actor adapter."),
                     asset.logical,
                     actualBoneCount=info.bone_count,
                     supportedBoneCount=ACTOR_SKELETON_BONE_COUNT,
                 )
             else:
                 self.report.info("ACTOR_SKELETON_CANDIDATE",
-                                 "发现可进一步核对的 v1 独立角色骨架资源", asset.logical,
+                                 T("发现可进一步核对的 v1 独立角色骨架资源", "Found a v1 standalone actor skeleton resource that can be further checked"), asset.logical,
                                  boneCount=info.bone_count)
         if len(candidates) > 1:
             self.report.error(
                 "ACTOR_SKELETON_AMBIGUOUS",
-                "输入包含多个独立 FBXSKEL，无法猜测哪个角色骨架属于当前身体服装。",
+                T("输入包含多个独立 FBXSKEL，无法猜测哪个角色骨架属于当前身体服装。", "The input contains multiple standalone FBXSKEL files; cannot guess which skeleton belongs to the current body outfit."),
                 candidates[0].logical,
                 candidates=[asset.logical for asset in candidates],
             )
@@ -1517,7 +1550,7 @@ class Converter:
         }
         self.report.info(
             "ACTOR_SKELETON_MESH_SOURCE",
-            "体型取自 BODY mesh 内嵌骨架，manifest 不写 bindPositions，运行时读取 mesh 休止。",
+            T("体型取自 BODY mesh 内嵌骨架，manifest 不写 bindPositions，运行时读取 mesh 休止。", "Shape comes from the skeleton embedded in the BODY mesh; the manifest omits bindPositions and the runtime reads the mesh rest."),
             body_mesh,
         )
 
@@ -1542,14 +1575,14 @@ class Converter:
         if getattr(self.args, "category", None) != "body" or "BODY" not in self.part_roots:
             self.report.error(
                 "ACTOR_SKELETON_BODY_REQUIRED",
-                "独立角色骨架只能绑定包含 BODY 部位的 body 衣橱条目。",
+                T("独立角色骨架只能绑定包含 BODY 部位的 body 衣橱条目。", "A standalone actor skeleton can only be bound to a body wardrobe entry that includes the BODY part."),
                 asset.logical,
             )
             return
         if self.game is None:
             self.report.error(
                 "ACTOR_SKELETON_BASELINE_MISSING",
-                "无法读取原始角色 /90 骨架，不能验证独立骨架的角色拓扑和休止姿态。",
+                T("无法读取原始角色 /90 骨架，不能验证独立骨架的角色拓扑和休止姿态。", "Cannot read the original actor /90 skeleton; cannot verify the standalone rig's topology and rest pose."),
                 ACTOR_SKELETON_BASELINE_RESOURCE,
             )
             return
@@ -1557,7 +1590,7 @@ class Converter:
         if baseline_asset is None:
             self.report.error(
                 "ACTOR_SKELETON_BASELINE_MISSING",
-                "原始游戏参考中没有固定 /90 角色骨架，不能安全发布独立骨架。",
+                T("原始游戏参考中没有固定 /90 角色骨架，不能安全发布独立骨架。", "The original game reference has no fixed /90 actor skeleton; cannot safely publish a standalone rig."),
                 ACTOR_SKELETON_BASELINE_RESOURCE,
             )
             return
@@ -1570,7 +1603,7 @@ class Converter:
             code = self._actor_skeleton_issue_code(error) if isinstance(error, ValueError) else "ACTOR_SKELETON_BASELINE_INVALID"
             self.report.error(
                 code,
-                f"独立骨架与原始 /90 角色骨架不兼容：{error}",
+                T(f"独立骨架与原始 /90 角色骨架不兼容：{error}", f"Standalone rig is incompatible with the original /90 actor skeleton: {error}"),
                 asset.logical,
                 baselineResource=ACTOR_SKELETON_BASELINE_RESOURCE,
                 baselineSha256=getattr(baseline_asset, "sha256", None),
@@ -1580,7 +1613,7 @@ class Converter:
         if body_mesh is None:
             self.report.error(
                 "ACTOR_SKELETON_BODY_MESH_REQUIRED",
-                "独立骨架必须和所选 BODY PFB 依赖图中的 MOD-owned mesh 一起发布，不能猜测身体资源。",
+                T("独立骨架必须和所选 BODY PFB 依赖图中的 MOD-owned mesh 一起发布，不能猜测身体资源。", "A standalone rig must be published together with the MOD-owned mesh in the selected BODY PFB dependency graph; body resources cannot be guessed."),
                 asset.logical,
             )
             return
@@ -1606,7 +1639,7 @@ class Converter:
         }
         self.report.info(
             "ACTOR_SKELETON_VERIFIED",
-            "独立角色骨架已通过 /90 拓扑、旋转和缩放核对；休止位置保留为源文件数据。",
+            T("独立角色骨架已通过 /90 拓扑、旋转和缩放核对；休止位置保留为源文件数据。", "Standalone actor skeleton passed /90 topology, rotation and scale checks; rest positions are kept as source data."),
             asset.logical,
             boneCount=info.bone_count,
             bodyMesh=body_mesh,
@@ -1626,7 +1659,7 @@ class Converter:
         if self.args.input.suffix.casefold() == ".pak":
             bundled = bundled_file_list()
             if bundled:
-                self.report.info("BUNDLED_HASH_LIST", "使用发行包内置 OWOTS 文件列表解析普通 PAK", str(bundled))
+                self.report.info("BUNDLED_HASH_LIST", T("使用发行包内置 OWOTS 文件列表解析普通 PAK", "Using the release-bundled OWOTS file list to resolve the ordinary PAK"), str(bundled))
                 return HashIndex.from_file(bundled, self.report)
         return None
 
@@ -1649,12 +1682,12 @@ class Converter:
             game = self.game.find(logical, streaming)
             if game:
                 return game
-        raise ConversionError(f"缺少资源：{logical}{' (streaming)' if streaming else ''}")
+        raise ConversionError(T(f"缺少资源：{logical}{' (streaming)' if streaming else ''}", f"Missing resource: {logical}{' (streaming)' if streaming else ''}"))
 
     def _inspect_node(self, logical: str, asset: Asset) -> ResourceNode:
         extension = PurePosixPath(logical).suffix.casefold()
         if extension in STRUCTURED_EXTENSIONS and self.worker is None:
-            raise ConversionError(f"需要 AppearanceRsz 才能安全读取 {logical}")
+            raise ConversionError(T(f"需要 AppearanceRsz 才能安全读取 {logical}", f"AppearanceRsz is required to safely read {logical}"))
         dependencies: tuple[str, ...] = ()
         warnings: tuple[dict[str, Any], ...] = ()
         if extension in (".pfb", ".user"):
@@ -1674,27 +1707,27 @@ class Converter:
                               if (entry.native_id == native_id if native_id is not None
                                   else expected_prefab is not None and entry.prefab.casefold() == expected_prefab.casefold())]
                 except (ImportError, KeyError, TypeError, ValueError, ConversionError) as error:
-                    raise ConversionError(f"无法读取 {part} catalog 的 native-id {native_id}：{error}") from error
+                    raise ConversionError(T(f"无法读取 {part} catalog 的 native-id {native_id}：{error}", f"Failed to read native-id {native_id} from the {part} catalog: {error}")) from error
                 if len(chosen) != 1:
-                    self.report.error("CATALOG_ROW_AMBIGUOUS", "catalog 中没有唯一匹配的 PFB/原生 ID 行，请检查高级配置", logical,
+                    self.report.error("CATALOG_ROW_AMBIGUOUS", T("catalog 中没有唯一匹配的 PFB/原生 ID 行，请检查高级配置", "No unique matching PFB/native-ID row in the catalog; check the advanced configuration"), logical,
                                       nativeId=native_id, expectedPrefab=expected_prefab, matches=len(chosen))
-                    raise ConversionError(f"{logical} 中没有唯一匹配的 PFB/原生 ID 行")
+                    raise ConversionError(T(f"{logical} 中没有唯一匹配的 PFB/原生 ID 行", f"No unique matching PFB/native-ID row in {logical}"))
                 if expected_prefab and chosen[0].prefab.casefold() != expected_prefab.casefold():
                     self.report.error(
                         "CATALOG_PREFAB_MISMATCH",
-                        "选中的 native-id 行指向的 PFB 与 manifest 目标 PFB 不同，已阻止避免运行时 preload timeout。",
+                        T("选中的 native-id 行指向的 PFB 与 manifest 目标 PFB 不同，已阻止避免运行时 preload timeout。", "The PFB pointed to by the selected native-id row differs from the manifest target PFB; blocked to avoid a runtime preload timeout."),
                         logical,
                         nativeId=native_id,
                         expectedPrefab=expected_prefab,
                         selectedPrefab=chosen[0].prefab,
                     )
-                    raise ConversionError("catalog 行与 PFB 不匹配：" + logical)
+                    raise ConversionError(T("catalog 行与 PFB 不匹配：" + logical, "Catalog row does not match the PFB: " + logical))
                 if native_id is None:
                     native_id = chosen[0].native_id
                     current_prefab, current_catalog, _ = self.part_roots[part]
                     self.part_roots[part] = (current_prefab, current_catalog, native_id)
                     self.catalog_selection[logical.casefold()] = (part, native_id)
-                    self.report.info("CATALOG_ID_AUTO", "已按 PFB 在真实 catalog 中唯一确定原生 ID", logical, nativeId=native_id)
+                    self.report.info("CATALOG_ID_AUTO", T("已按 PFB 在真实 catalog 中唯一确定原生 ID", "Native ID uniquely determined by PFB in the real catalog"), logical, nativeId=native_id)
                 # A PlayerPartsList is a table.  Follow only the selected row;
                 # otherwise unrelated installed rows become false dependencies
                 # and can force an incomplete reference tree to fail.
@@ -1709,12 +1742,12 @@ class Converter:
                     try:
                         values.append(logical_path(raw))
                     except ValueError:
-                        self.report.warn("RESOURCE_PATH_IGNORED", "结构化资源含有非逻辑路径引用，已忽略", logical,
+                        self.report.warn("RESOURCE_PATH_IGNORED", T("结构化资源含有非逻辑路径引用，已忽略", "Structured resource contains a non-logical path reference; ignored"), logical,
                                          value=raw)
                 dependencies = tuple(sorted(set(values), key=str.casefold))
             warnings = tuple(result.get("CrcWarnings") or ())
             if warnings:
-                self.report.warn("CRC_MISMATCH", "结构化资源存在 RSZ CRC mismatch；默认仍禁止写回，除非显式 --allow-crc-mismatch",
+                self.report.warn("CRC_MISMATCH", T("结构化资源存在 RSZ CRC mismatch；默认仍禁止写回，除非显式 --allow-crc-mismatch", "Structured resource has an RSZ CRC mismatch; writing back is still forbidden by default unless --allow-crc-mismatch is given explicitly"),
                                  logical, warnings=list(warnings))
         elif extension == ".mdf2":
             dependencies = mdf_dependencies(asset.path.read_bytes())
@@ -1742,15 +1775,15 @@ class Converter:
                     raise
                 if getattr(self.args, "allow_unverified_game_assets", False):
                     self.report.warn("GAME_ASSET_UNVERIFIED",
-                                     "参考目录未提供此依赖；实验选项允许发布包依赖游戏本体/PAK 中的同名资源",
+                                     T("参考目录未提供此依赖；实验选项允许发布包依赖游戏本体/PAK 中的同名资源", "The reference directory does not provide this dependency; the experimental option allows the package to depend on a same-named resource in the game/PAK"),
                                      logical)
                 elif self.game is None:
                     self.report.error("REQUIRED_DEPENDENCY_MISSING",
-                                      "缺少必要依赖；请提供原始游戏目录或完整的 --game-extract",
+                                      T("缺少必要依赖；请提供原始游戏目录或完整的 --game-extract", "Missing required dependency; provide the original game directory or a complete --game-extract"),
                                       logical)
                 else:
                     self.report.error("GAME_ASSET_MISSING",
-                                      "原始游戏 PAK/参考目录中没有此依赖，不能安全外部化",
+                                      T("原始游戏 PAK/参考目录中没有此依赖，不能安全外部化", "This dependency is not in the original game PAK/reference directory; cannot externalize it safely"),
                                       logical)
                 continue
             node = self._inspect_node(logical, asset)
@@ -1779,40 +1812,40 @@ class Converter:
         if requested_part:
             requested_part = requested_part.upper()
             if requested_part not in ALL_PARTS:
-                raise ConversionError(f"未知部位：{requested_part}")
+                raise ConversionError(T(f"未知部位：{requested_part}", f"Unknown part: {requested_part}"))
         explicit_prefab = getattr(self.args, "prefab", None)
         explicit_catalog = getattr(self.args, "catalog", None)
         native_id = getattr(self.args, "native_id", None)
         if explicit_prefab:
             prefab = logical_path(explicit_prefab)
             if not prefab.casefold().endswith(".pfb"):
-                raise ConversionError("prefab 必须是无数值版本后缀的 .pfb 逻辑路径")
+                raise ConversionError(T("prefab 必须是无数值版本后缀的 .pfb 逻辑路径", "prefab must be a .pfb logical path without a numeric version suffix"))
             part = (getattr(self.args, "part", None) or classify_part(prefab) or "BODY").upper()
             if part not in ALL_PARTS:
-                raise ConversionError(f"未知部位：{part}")
+                raise ConversionError(T(f"未知部位：{part}", f"Unknown part: {part}"))
             catalog = logical_path(explicit_catalog) if explicit_catalog else None
             if catalog and not catalog.casefold().endswith(".user"):
-                raise ConversionError("catalog 必须是无数值版本后缀的 .user 逻辑路径")
+                raise ConversionError(T("catalog 必须是无数值版本后缀的 .user 逻辑路径", "catalog must be a .user logical path without a numeric version suffix"))
             if catalog:
                 roles = self._native_catalog_roles()
                 known_roles = roles.get(catalog.casefold())
                 if not known_roles:
                     self.report.error(
                         "CATALOG_ROLE_UNVERIFIED",
-                        "内置原生 catalog 索引中没有此路径，无法确认它的部位角色；请使用索引中的原始 catalog。",
+                        T("内置原生 catalog 索引中没有此路径，无法确认它的部位角色；请使用索引中的原始 catalog。", "This path is not in the built-in native catalog index; its part role cannot be confirmed. Use an original catalog from the index."),
                         catalog,
                         part=part,
                     )
-                    raise ConversionError("无法验证 catalog 部位角色：" + catalog)
+                    raise ConversionError(T("无法验证 catalog 部位角色：" + catalog, "Cannot verify catalog part role: " + catalog))
                 if part not in known_roles:
                     self.report.error(
                         "CATALOG_ROLE_MISMATCH",
-                        "显式 catalog 的原生部位角色与 --part/原始 PFB 不一致，已阻止。",
+                        T("显式 catalog 的原生部位角色与 --part/原始 PFB 不一致，已阻止。", "The explicit catalog's native part role does not match --part/original PFB; blocked."),
                         catalog,
                         expectedPart=part,
                         actualParts=sorted(known_roles),
                     )
-                    raise ConversionError("catalog 部位角色不匹配：" + catalog)
+                    raise ConversionError(T("catalog 部位角色不匹配：" + catalog, "Catalog part role mismatch: " + catalog))
             self.part_roots[part] = (prefab, catalog, native_id)
         else:
             auto = self._auto_native_part_roots(category, requested_part)
@@ -1824,7 +1857,7 @@ class Converter:
             pfbs = [(logical, part) for logical, part in candidates
                     if part and logical.casefold().endswith(".pfb")]
             if not self.part_roots and not pfbs:
-                raise ConversionError("未找到 PFB；普通 mesh/texture MOD 需要 --prefab 指定原始游戏 PFB")
+                raise ConversionError(T("未找到 PFB；普通 mesh/texture MOD 需要 --prefab 指定原始游戏 PFB", "No PFB found; an ordinary mesh/texture MOD needs --prefab to specify the original game PFB"))
             grouped: dict[str, list[str]] = {}
             for logical, part in pfbs:
                 if (part and (requested_part is None or part == requested_part) and
@@ -1835,7 +1868,7 @@ class Converter:
                 if len(unique) > 1:
                     self.report.error(
                         "PFB_CANDIDATE_AMBIGUOUS",
-                        "同一部位找到多个 PFB 候选，不能把 normal/HQ 或不同变体静默合并。",
+                        T("同一部位找到多个 PFB 候选，不能把 normal/HQ 或不同变体静默合并。", "Multiple PFB candidates found for the same part; normal/HQ or different variants must not be silently merged."),
                         part,
                         candidates=unique,
                     )
@@ -1846,20 +1879,20 @@ class Converter:
                 if part not in self.part_roots:
                     self.part_roots[part] = (unique[0], None, None)
             if any(issue.code == "PFB_CANDIDATE_AMBIGUOUS" for issue in self.report.errors):
-                raise ConversionError("PFB 候选存在部位歧义；请用 --prefab 明确选择")
+                raise ConversionError(T("PFB 候选存在部位歧义；请用 --prefab 明确选择", "PFB candidates are ambiguous by part; choose explicitly with --prefab"))
             if not self.part_roots:
-                raise ConversionError("PFB 候选与 --category 不匹配，请用 --part/--prefab 明确选择")
+                raise ConversionError(T("PFB 候选与 --category 不匹配，请用 --part/--prefab 明确选择", "PFB candidates do not match --category; choose explicitly with --part/--prefab"))
         if category is None:
             category = category_for_parts(tuple(self.part_roots))
         if category not in PARTS:
-            raise ConversionError("category 必须是 body、cloak、gauntlet 或 weapon")
+            raise ConversionError(T("category 必须是 body、cloak、gauntlet 或 weapon", "category must be body, cloak, gauntlet or weapon"))
         wrong = [part for part in self.part_roots if PART_CATEGORY.get(part) != category]
         if wrong:
-            raise ConversionError("选择中包含多个衣橱分类：" + ", ".join(wrong))
+            raise ConversionError(T("选择中包含多个衣橱分类：" + ", ".join(wrong), "Selection contains multiple wardrobe categories: " + ", ".join(wrong)))
         if explicit_catalog and not explicit_prefab:
-            raise ConversionError("--catalog 必须和 --prefab 一起使用")
+            raise ConversionError(T("--catalog 必须和 --prefab 一起使用", "--catalog must be used together with --prefab"))
         if native_id is not None and not explicit_catalog:
-            raise ConversionError("--native-id 需要 --catalog")
+            raise ConversionError(T("--native-id 需要 --catalog", "--native-id requires --catalog"))
         self.catalog_selection = {
             catalog.casefold(): (part, native_id)
             for part, (_prefab, catalog, native_id) in self.part_roots.items()
@@ -1872,30 +1905,30 @@ class Converter:
         original_args = self.args
         if any(getattr(original_args, key, None) is not None
                for key in ("part", "prefab", "catalog", "native_id")):
-            raise ConversionError("--parts-plan 不能与单部位选择参数一起使用")
+            raise ConversionError(T("--parts-plan 不能与单部位选择参数一起使用", "--parts-plan cannot be used together with single-part selection options"))
         try:
             plan = json.loads(Path(original_args.parts_plan).read_text(encoding="utf-8-sig"))
         except (OSError, ValueError) as error:
-            raise ConversionError("无法读取部位选择计划：" + str(error)) from error
+            raise ConversionError(T("无法读取部位选择计划：" + str(error), "Failed to read the parts selection plan: " + str(error))) from error
         if not isinstance(plan, dict) or set(plan) != {"parts"}:
-            raise ConversionError("部位计划必须为仅包含 parts 数组的 JSON 对象")
+            raise ConversionError(T("部位计划必须为仅包含 parts 数组的 JSON 对象", "The parts plan must be a JSON object containing only a parts array"))
         rows = plan["parts"]
         if not isinstance(rows, list) or not rows or len(rows) > len(ALL_PARTS):
-            raise ConversionError("parts 必须是非空且长度不超过部位总数的数组")
+            raise ConversionError(T("parts 必须是非空且长度不超过部位总数的数组", "parts must be a non-empty array no longer than the total number of parts"))
         selected = {}
         try:
             for row in rows:
                 if (not isinstance(row, dict) or set(row) - {"part", "prefab", "catalog", "nativeId"}
                         or not all(isinstance(row.get(key), str) and row[key].strip()
                                    for key in ("part", "prefab", "catalog"))):
-                    raise ConversionError("每个计划部位必须包含 part、prefab、catalog；nativeId 可选")
+                    raise ConversionError(T("每个计划部位必须包含 part、prefab、catalog；nativeId 可选", "Each planned part must include part, prefab and catalog; nativeId is optional"))
                 if "catalog" in row and (not isinstance(row["catalog"], str) or not row["catalog"].strip()):
-                    raise ConversionError("计划中的 catalog 必须为非空路径字符串")
+                    raise ConversionError(T("计划中的 catalog 必须为非空路径字符串", "catalog in the plan must be a non-empty path string"))
                 if "nativeId" in row and (type(row["nativeId"]) is not int or row["nativeId"] < 0):
-                    raise ConversionError("计划中的 nativeId 必须为非负整数")
+                    raise ConversionError(T("计划中的 nativeId 必须为非负整数", "nativeId in the plan must be a non-negative integer"))
                 part = row["part"].upper()
                 if part in selected:
-                    raise ConversionError("部位计划重复选择了 " + part)
+                    raise ConversionError(T("部位计划重复选择了 " + part, "Parts plan selects a duplicate: " + part))
                 self.args = argparse.Namespace(**vars(original_args))
                 self.args.parts_plan = None
                 self.args.part, self.args.prefab = part, row["prefab"]
@@ -1905,10 +1938,10 @@ class Converter:
                 selected.update(self.part_roots)
             category = category_for_parts(tuple(selected))
             if original_args.category is not None and original_args.category != category:
-                raise ConversionError("部位计划与指定分类不一致")
+                raise ConversionError(T("部位计划与指定分类不一致", "The parts plan does not match the specified category"))
             catalogs = [catalog.casefold() for _, catalog, _ in selected.values() if catalog]
             if len(catalogs) != len(set(catalogs)):
-                raise ConversionError("不同部位不能共享同一个 catalog")
+                raise ConversionError(T("不同部位不能共享同一个 catalog", "Different parts must not share the same catalog"))
         finally:
             self.args = original_args
             self.part_roots = {}
@@ -1918,7 +1951,7 @@ class Converter:
         self.catalog_selection = {catalog.casefold(): (part, native_id)
                                   for part, (_, catalog, native_id) in selected.items() if catalog}
         self.args.category = category
-        self.report.info("EXPLICIT_PARTS_PLAN", "使用经过逐部位校验的显式转换计划",
+        self.report.info("EXPLICIT_PARTS_PLAN", T("使用经过逐部位校验的显式转换计划", "Using an explicit conversion plan validated part by part"),
                          str(original_args.parts_plan), parts=list(selected))
 
     def _native_catalog_roles(self) -> dict[str, set[str]]:
@@ -1987,7 +2020,7 @@ class Converter:
             if not geometry:
                 self.report.error(
                     "NATIVE_PART_NO_MATCH",
-                    "自动选择的原生 PFB 依赖图没有引用输入 MOD 的 mesh/MDF2；为避免错误部位转换，已阻止。",
+                    T("自动选择的原生 PFB 依赖图没有引用输入 MOD 的 mesh/MDF2；为避免错误部位转换，已阻止。", "The auto-selected native PFB dependency graph does not reference a mesh/MDF2 from the input MOD; blocked to avoid converting the wrong part."),
                     prefab,
                     part=part,
                     sourceCandidates=[asset.logical for asset in source_assets.values()],
@@ -2011,7 +2044,7 @@ class Converter:
         try:
             records = json.loads(index_path.read_text(encoding="utf-8"))["records"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-            self.report.warn("NATIVE_INDEX_UNAVAILABLE", f"原生部位索引读取失败：{error}", str(index_path))
+            self.report.warn("NATIVE_INDEX_UNAVAILABLE", T(f"原生部位索引读取失败：{error}", f"Failed to read the native part index: {error}"), str(index_path))
             return {}
         stems = []
         for asset in self.bundle.source.assets.values():
@@ -2062,12 +2095,12 @@ class Converter:
                       for value in values}
             if len(unique) != 1:
                 self.report.error("NATIVE_PART_AMBIGUOUS",
-                                  "自动部位检测找到多个不同原生候选；请用 --prefab/--catalog/--native-id 明确选择",
+                                  T("自动部位检测找到多个不同原生候选；请用 --prefab/--catalog/--native-id 明确选择", "Automatic part detection found multiple distinct native candidates; choose explicitly with --prefab/--catalog/--native-id"),
                                   part, candidates=list(unique))
                 continue
             value = next(iter(unique.values()))
             result[part] = (value["prefab"], value["catalog"], value["native_id"])
-            self.report.info("NATIVE_PART_AUTO", "根据只读原生部位索引自动选择 prefab/catalog/native-id",
+            self.report.info("NATIVE_PART_AUTO", T("根据只读原生部位索引自动选择 prefab/catalog/native-id", "Automatically selected prefab/catalog/native-id from the read-only native part index"),
                              value["prefab"], part=part, catalog=value["catalog"], nativeId=value["native_id"])
         return result
 
@@ -2085,9 +2118,9 @@ class Converter:
             if has_game_paks and list_path and GamePakReference is not None:
                 try:
                     provider = GamePakReference(root_path, list_path, self.report)
-                    self.report.info("GAME_PAK_PROVIDER", "已启用原始游戏 PAK 只读按需取档", str(root_path))
+                    self.report.info("GAME_PAK_PROVIDER", T("已启用原始游戏 PAK 只读按需取档", "Enabled read-only on-demand loading from the original game PAK"), str(root_path))
                 except (ImportError, OSError, ValueError, RuntimeError) as error:
-                    self.report.error("GAME_PAK_PROVIDER_FAILED", f"原始游戏 PAK 参考初始化失败：{error}", str(root_path))
+                    self.report.error("GAME_PAK_PROVIDER_FAILED", T(f"原始游戏 PAK 参考初始化失败：{error}", f"Failed to initialize the original game PAK reference: {error}"), str(root_path))
             # ``--game-root`` means the original Steam install.  Loose
             # extracted trees are intentionally accepted only through the
             # explicitly named ``--game-extract`` option.
@@ -2095,13 +2128,13 @@ class Converter:
             if has_game_paks and provider is None:
                 self.report.error(
                     "GAME_PAK_PROVIDER_REQUIRED",
-                    "原始游戏 PAK 只读参考不可用；请把 OWOTS_STM_Release.list 放在 EXE 旁或使用 --game-extract。",
+                    T("原始游戏 PAK 只读参考不可用；请把 OWOTS_STM_Release.list 放在 EXE 旁或使用 --game-extract。", "The original game PAK read-only reference is unavailable; put OWOTS_STM_Release.list next to the EXE or use --game-extract."),
                     str(root_path),
                 )
             elif not has_game_paks:
                 self.report.error(
                     "GAME_ROOT_PAK_MISSING",
-                    "--game-root 应指向原始 Steam 安装目录；解包目录请改用 --game-extract。",
+                    T("--game-root 应指向原始 Steam 安装目录；解包目录请改用 --game-extract。", "--game-root should point to the original Steam install directory; for an extracted directory use --game-extract instead."),
                     str(root_path),
                 )
 
@@ -2134,7 +2167,7 @@ class Converter:
             digest = hashlib.sha256(node.logical.casefold().encode()).hexdigest()[:16]
             target = f"mods/{identity}/{digest}/{PurePosixPath(node.logical).name}"
             if target.casefold() in used:
-                raise ConversionError("独立资源输出路径冲突：" + target)
+                raise ConversionError(T("独立资源输出路径冲突：" + target, "Independent resource output path conflict: " + target))
             used.add(target.casefold())
             self.routes[key] = target
         self.report.stats["privateResources"] = len(self.routes)
@@ -2167,29 +2200,33 @@ class Converter:
                 # candidate analysis has been run yet.
                 if asset.logical.casefold() in self.actor_skeleton_keys:
                     continue
-                message = ("独立骨架未被所选部位引用；静态衣橱不会自动替换角色根骨架，"
-                           "体型可能保持游戏原始比例。需要专用骨架适配并验证实际关节位置")
+                message = T("独立骨架未被所选部位引用；静态衣橱不会自动替换角色根骨架，"
+                            "体型可能保持游戏原始比例。需要专用骨架适配并验证实际关节位置",
+                            "The standalone rig is not referenced by the selected parts; a static "
+                            "wardrobe will not automatically replace the actor root skeleton, so the "
+                            "body may keep the game's original proportions. A dedicated skeleton "
+                            "adapter is required and actual joint positions must be verified")
                 if strict_compat or not allow:
                     self.report.error("ACTOR_SKELETON_ADAPTER_REQUIRED", message, location)
                 else:
                     self.report.warn("ACTOR_SKELETON_ADAPTER_REQUIRED",
-                                     message + "（显式实验选项仅允许静态候选，未迁移独立骨架）",
+                                     message + T("（显式实验选项仅允许静态候选，未迁移独立骨架）", " (the explicit experimental option only allows the static candidate; the standalone rig was not migrated)"),
                                      location)
             elif asset.extension in STRUCTURED_EXTENSIONS | {".mesh", ".tex"}:
-                message = "MOD 中的模型/材质资源未被当前部位依赖图消费；请增加部位或选择变体"
+                message = T("MOD 中的模型/材质资源未被当前部位依赖图消费；请增加部位或选择变体", "Model/material resources in the MOD are not consumed by the current part dependency graph; add a part or choose a variant")
                 if strict_compat or not allow:
                     self.report.error("UNCONSUMED_MOD_RESOURCE", message, location)
                 else:
                     self.report.warn("UNCONSUMED_MOD_RESOURCE",
-                                     message + "（实验选项允许继续，资源仍不会静默复制）", location)
+                                     message + T("（实验选项允许继续，资源仍不会静默复制）", " (the experimental option allows continuing; the resource is still not copied silently)"), location)
             else:
                 if strict_compat:
                     self.report.error("UNCONSUMED_MOD_RESOURCE",
-                                      "MOD 中的附属资源未被当前部位依赖图消费，未静默复制",
+                                      T("MOD 中的附属资源未被当前部位依赖图消费，未静默复制", "Auxiliary resources in the MOD are not consumed by the current part dependency graph; not copied silently"),
                                       location)
                 else:
                     self.report.warn("UNCONSUMED_MOD_RESOURCE",
-                                     "MOD 中的附属资源未被当前部位依赖图消费，未静默复制",
+                                     T("MOD 中的附属资源未被当前部位依赖图消费，未静默复制", "Auxiliary resources in the MOD are not consumed by the current part dependency graph; not copied silently"),
                                      location)
 
     def _copy_or_rewrite(self, node: ResourceNode, destination: Path,
@@ -2199,7 +2236,7 @@ class Converter:
         extension = node.asset.extension
         if extension in (".pfb", ".user"):
             if self.worker is None:
-                raise ConversionError(f"需要 AppearanceRsz 重写 {node.logical}")
+                raise ConversionError(T(f"需要 AppearanceRsz 重写 {node.logical}", f"AppearanceRsz is required to rewrite {node.logical}"))
             return self.worker.rewrite(source, destination, remap,
                                        bool(getattr(self.args, "allow_crc_mismatch", False)), selection)
         payload = source.read_bytes() if payload_override is None else payload_override
@@ -2208,7 +2245,7 @@ class Converter:
                 from owots_vendor.workspace.appearance_mdf import rewrite_textures  # type: ignore
                 payload = rewrite_textures(payload, dict(remap))
             except (ImportError, OSError, ValueError, KeyError, IndexError, struct.error) as error:
-                raise ConversionError(f"MDF2 纹理路径无法严格重写：{node.logical}：{error}") from error
+                raise ConversionError(T(f"MDF2 纹理路径无法严格重写：{node.logical}：{error}", f"MDF2 texture paths cannot be strictly rewritten: {node.logical}: {error}")) from error
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("xb") as stream:
             stream.write(payload)
@@ -2219,7 +2256,7 @@ class Converter:
             return None
         image = self.modinfo.screenshot
         if image.stat().st_size > 4 * 1024 * 1024:
-            self.report.warn("ICON_TOO_LARGE", "预览图超过 4 MiB，已省略", str(image))
+            self.report.warn("ICON_TOO_LARGE", T("预览图超过 4 MiB，已省略", "Preview image exceeds 4 MiB; omitted"), str(image))
             return None
         if image.suffix.casefold() not in {".png", ".jpg", ".jpeg"}:
             return None
@@ -2237,7 +2274,7 @@ class Converter:
             if not body_mesh or not names:
                 return None
             if not body_mesh.casefold().startswith(f"mods/{identity.casefold()}/"):
-                raise ConversionError("BODY mesh 输出路径未位于 MOD 私有命名空间")
+                raise ConversionError(T("BODY mesh 输出路径未位于 MOD 私有命名空间", "BODY mesh output path is not inside the MOD private namespace"))
             # No `resource` and no `bindPositions`: the runtime reads the equipped
             # BODY mesh's own skeleton rest for the authored shape.
             return {
@@ -2252,11 +2289,11 @@ class Converter:
         resource = self.routes.get(self.actor_skeleton_asset.logical.casefold())
         body_mesh = self.routes.get((self.actor_skeleton_body_mesh or "").casefold())
         if not resource or not body_mesh:
-            raise ConversionError("独立骨架或 BODY mesh 未能分配私有输出路径")
+            raise ConversionError(T("独立骨架或 BODY mesh 未能分配私有输出路径", "Could not assign a private output path to the standalone rig or BODY mesh"))
         if not resource.casefold().startswith(f"mods/{identity.casefold()}/"):
-            raise ConversionError("独立骨架输出路径未位于 MOD 私有命名空间")
+            raise ConversionError(T("独立骨架输出路径未位于 MOD 私有命名空间", "Standalone rig output path is not inside the MOD private namespace"))
         if not body_mesh.casefold().startswith(f"mods/{identity.casefold()}/"):
-            raise ConversionError("独立骨架 BODY mesh 输出路径未位于 MOD 私有命名空间")
+            raise ConversionError(T("独立骨架 BODY mesh 输出路径未位于 MOD 私有命名空间", "Standalone rig BODY mesh output path is not inside the MOD private namespace"))
         info = self.actor_skeleton_info
         return {
             "schemaVersion": 1,
@@ -2278,9 +2315,9 @@ class Converter:
                 forbidden.append(Path(value).resolve())
         for root in forbidden:
             if output == root or output.is_relative_to(root):
-                raise ConversionError("输出目录不能与输入或只读参考目录相同/位于其中")
+                raise ConversionError(T("输出目录不能与输入或只读参考目录相同/位于其中", "Output directory must not equal or be located inside the input or read-only reference directory"))
         if output.exists():
-            raise ConversionError("输出目录已存在；为避免覆盖，请换一个新路径")
+            raise ConversionError(T("输出目录已存在；为避免覆盖，请换一个新路径", "Output directory already exists; choose a new path to avoid overwriting"))
         self.modinfo = parse_modinfo(self.args.input.resolve(), self.report) if self.args.input.is_dir() else None
         self._prepare_game()
         index = self._hash_index()
@@ -2288,7 +2325,7 @@ class Converter:
         self.bundle.load()
         self._audit_dynamic_behavior()
         if self.report.errors:
-            raise ConversionError("输入诊断存在阻止性错误；请先处理报告中的 error")
+            raise ConversionError(T("输入诊断存在阻止性错误；请先处理报告中的 error", "Input diagnostics contain blocking errors; resolve the errors in the report first"))
         self._select_part_roots()
         if self.game is None and getattr(self.args, "game_root", None):
             self._prepare_game()
@@ -2299,7 +2336,7 @@ class Converter:
         self._compute_routes()
         self._audit_unconsumed_mod_assets()
         if self.report.errors:
-            raise ConversionError("依赖图存在阻止性错误")
+            raise ConversionError(T("依赖图存在阻止性错误", "The dependency graph contains blocking errors"))
         identity = safe_id(getattr(self.args, "mod_id", None) or
                            (self.modinfo.values.get("name") if self.modinfo else None) or self.args.input.stem)
         staging_parent = output.resolve().parent
@@ -2309,16 +2346,16 @@ class Converter:
             manifest_parts: list[dict[str, str]] = []
             for part, (prefab, catalog, native_id) in sorted(self.part_roots.items()):
                 if prefab.casefold() not in self.routes:
-                    raise ConversionError(f"原始 PFB 未能从参考目录/PAK 读取：{prefab}")
+                    raise ConversionError(T(f"原始 PFB 未能从参考目录/PAK 读取：{prefab}", f"Could not read the original PFB from the reference directory/PAK: {prefab}"))
                 prefab_target = self.routes[prefab.casefold()]
                 catalog_target = None
                 if catalog:
                     if catalog.casefold() not in self.routes:
-                        raise ConversionError(f"原始 catalog USER 未能从参考目录/PAK 读取：{catalog}")
+                        raise ConversionError(T(f"原始 catalog USER 未能从参考目录/PAK 读取：{catalog}", f"Could not read the original catalog USER from the reference directory/PAK: {catalog}"))
                     catalog_target = self.routes[catalog.casefold()]
                 else:
-                    self.report.warn("CATALOG_REQUIRED", f"{part} 没有独立 catalog；请在导出前提供 --catalog", prefab)
-                    raise ConversionError(f"{part} 需要 --catalog 才能生成可识别衣橱条目")
+                    self.report.warn("CATALOG_REQUIRED", T(f"{part} 没有独立 catalog；请在导出前提供 --catalog", f"{part} has no standalone catalog; provide --catalog before export"), prefab)
+                    raise ConversionError(T(f"{part} 需要 --catalog 才能生成可识别衣橱条目", f"{part} requires --catalog to generate a recognizable wardrobe entry"))
                 manifest_parts.append({"part": part, "catalog": catalog_target, "prefab": prefab_target})
             # First write all private nodes.  Every remap is based on the
             # final logical path, never a versioned physical filename.
@@ -2359,7 +2396,7 @@ class Converter:
                             self.report.stats.setdefault("texturePromotions", []).append(summary)
                             self.report.info(
                                 "TEXTURE_RESOLUTION",
-                                "已检查 base/streaming 纹理；安全时用完整高清 companion 作为 base",
+                                T("已检查 base/streaming 纹理；安全时用完整高清 companion 作为 base", "Checked base/streaming textures; uses the complete high-resolution companion as base when safe"),
                                 node.logical,
                                 promoted=summary["promoted"],
                                 reasons=summary["reasons"],
@@ -2369,7 +2406,7 @@ class Converter:
                             # the optional structural inspector is unavailable.
                             base_override = None
                             self.report.warn("TEXTURE_RESOLUTION_CHECK_FAILED",
-                                             f"高清纹理结构检查失败，保留原 base：{error}", node.logical)
+                                             T(f"高清纹理结构检查失败，保留原 base：{error}", f"High-resolution texture structure check failed; keeping the original base: {error}"), node.logical)
                 seen_variants: set[tuple[str, bool]] = set()
                 for asset in variants:
                     marker = (str(asset.path).casefold(), asset.streaming)
@@ -2394,11 +2431,11 @@ class Converter:
             if (len(set(hide_parts)) != len(hide_parts) or
                     any(part not in ALL_PARTS for part in hide_parts) or
                     any(part in self.part_roots for part in hide_parts)):
-                raise ConversionError("--hide-part 不能重复、未知或隐藏当前 manifest 已提供的部位")
+                raise ConversionError(T("--hide-part 不能重复、未知或隐藏当前 manifest 已提供的部位", "--hide-part must not repeat, must be known, and must not hide a part already provided by the current manifest"))
             if (len(set(incompatible_categories)) != len(incompatible_categories) or
                     any(category not in PARTS or category == self.args.category
                         for category in incompatible_categories)):
-                raise ConversionError("--incompatible-category 不能重复、未知或等于当前分类")
+                raise ConversionError(T("--incompatible-category 不能重复、未知或等于当前分类", "--incompatible-category must not repeat, must be known, and must not equal the current category"))
             manifest = {
                 "schemaVersion": SCHEMA_VERSION, "id": identity, "name": name,
                 "category": self.args.category, "parts": manifest_parts,
@@ -2422,7 +2459,7 @@ class Converter:
             self.report.status = "converted"
             self._write_reports(staging)
             if output.exists():
-                raise ConversionError("输出目录已存在；为避免覆盖，请换一个空路径")
+                raise ConversionError(T("输出目录已存在；为避免覆盖，请换一个空路径", "Output directory already exists; choose a new empty path to avoid overwriting"))
             staging.rename(output)
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)
@@ -2432,54 +2469,54 @@ class Converter:
         report_json = root / "conversion-report.json"
         report_json.write_text(json.dumps(self.report.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         report_md = root / "CONVERSION-REPORT.md"
-        lines = ["# OWOTS 衣橱转换报告", "", f"状态：`{self.report.status}`", "", "## 处理结果", ""]
+        lines = [T("# OWOTS 衣橱转换报告", "# OWOTS Wardrobe Conversion Report"), "", T(f"状态：`{self.report.status}`", f"Status: `{self.report.status}`"), "", T("## 处理结果", "## Results"), ""]
         for issue in self.report.issues:
-            location = f"（{issue.path}）" if issue.path else ""
-            lines.append(f"- **{issue.severity}** `{issue.code}`：{issue.message}{location}")
+            location = T(f"（{issue.path}）", f" ({issue.path})") if issue.path else ""
+            lines.append(T(f"- **{issue.severity}** `{issue.code}`：{issue.message}{location}", f"- **{issue.severity}** `{issue.code}`: {issue.message}{location}"))
         report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mod_converter",
-        description="OWOTS 普通 MOD → 四分类独立衣橱 MOD 转换器（安全解包、依赖闭包、严格报告）",
+        description=T("OWOTS 普通 MOD → 四分类独立衣橱 MOD 转换器（安全解包、依赖闭包、严格报告）", "OWOTS normal MOD → four-category standalone wardrobe MOD converter (safe unpacking, dependency closure, strict reports)"),
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    inspect = sub.add_parser("inspect", help="只读扫描输入，输出诊断报告")
-    convert = sub.add_parser("convert", help="转换为可安装的衣橱 MOD 包")
+    inspect = sub.add_parser("inspect", help=T("只读扫描输入，输出诊断报告", "Read-only scan of the input and diagnostic report output"))
+    convert = sub.add_parser("convert", help=T("转换为可安装的衣橱 MOD 包", "Convert to an installable wardrobe MOD package"))
     for command in (inspect, convert):
-        command.add_argument("--input", type=Path, required=True, help="松散 MOD 目录或普通 .pak 文件")
-        command.add_argument("--hash-list", type=Path, help="可信 OWOTS_STM_Release.list")
-        command.add_argument("--hash-map", type=Path, help="作者/用户提供的 JSON hash→natives/stm 路径映射")
-        command.add_argument("--game-root", type=Path, help="只读原始游戏/解包参考目录")
-        command.add_argument("--game-extract", type=Path, help="只读、已解包的 natives/stm 参考目录（优先于 game-root）")
-        command.add_argument("--worker", type=Path, help="AppearanceRsz.exe 或 .dll")
-        command.add_argument("--template", type=Path, help="RSZ 模板 JSON")
-    inspect.add_argument("--report", type=Path, help="将只读检查 JSON 写入新文件（不覆盖已有文件）")
-    convert.add_argument("--output", type=Path, required=True, help="新建输出目录（已存在时拒绝覆盖）")
-    convert.add_argument("--id", dest="mod_id", help="稳定 MOD ID；默认从 modinfo/name 推断")
+        command.add_argument("--input", type=Path, required=True, help=T("松散 MOD 目录或普通 .pak 文件", "Loose MOD directory or ordinary .pak file"))
+        command.add_argument("--hash-list", type=Path, help=T("可信 OWOTS_STM_Release.list", "Trusted OWOTS_STM_Release.list"))
+        command.add_argument("--hash-map", type=Path, help=T("作者/用户提供的 JSON hash→natives/stm 路径映射", "Author/user-provided JSON hash→natives/stm path map"))
+        command.add_argument("--game-root", type=Path, help=T("只读原始游戏/解包参考目录", "Read-only original game/extracted reference directory"))
+        command.add_argument("--game-extract", type=Path, help=T("只读、已解包的 natives/stm 参考目录（优先于 game-root）", "Read-only extracted natives/stm reference directory (takes priority over game-root)"))
+        command.add_argument("--worker", type=Path, help=T("AppearanceRsz.exe 或 .dll", "AppearanceRsz.exe or .dll"))
+        command.add_argument("--template", type=Path, help=T("RSZ 模板 JSON", "RSZ template JSON"))
+    inspect.add_argument("--report", type=Path, help=T("将只读检查 JSON 写入新文件（不覆盖已有文件）", "Write the read-only inspection JSON to a new file (never overwrites an existing file)"))
+    convert.add_argument("--output", type=Path, required=True, help=T("新建输出目录（已存在时拒绝覆盖）", "New output directory (refuses to overwrite if it already exists)"))
+    convert.add_argument("--id", dest="mod_id", help=T("稳定 MOD ID；默认从 modinfo/name 推断", "Stable MOD ID; inferred from modinfo/name by default"))
     convert.add_argument("--category", choices=tuple(PARTS), help="body/cloak/gauntlet/weapon")
-    convert.add_argument("--part", help="部位，例如 BODY、HEAD、HAIR、CLOAK、WEAPON")
-    convert.add_argument("--prefab", help="原始游戏 PFB 的逻辑路径（无版本后缀）")
-    convert.add_argument("--catalog", help="原始游戏 PlayerPartsList USER 的逻辑路径（无版本后缀）")
-    convert.add_argument("--native-id", type=int, help="目录中要选用的原生 ID；不填写则按 PFB 唯一匹配")
-    convert.add_argument("--parts-plan", help="JSON 部位选择计划，用于配套的多个 PFB；与单部位参数互斥")
+    convert.add_argument("--part", help=T("部位，例如 BODY、HEAD、HAIR、CLOAK、WEAPON", "Part, for example BODY, HEAD, HAIR, CLOAK, WEAPON"))
+    convert.add_argument("--prefab", help=T("原始游戏 PFB 的逻辑路径（无版本后缀）", "Logical path of the original game PFB (no version suffix)"))
+    convert.add_argument("--catalog", help=T("原始游戏 PlayerPartsList USER 的逻辑路径（无版本后缀）", "Logical path of the original game PlayerPartsList USER (no version suffix)"))
+    convert.add_argument("--native-id", type=int, help=T("目录中要选用的原生 ID；不填写则按 PFB 唯一匹配", "Native ID to select in the catalog; if omitted, matched uniquely by PFB"))
+    convert.add_argument("--parts-plan", help=T("JSON 部位选择计划，用于配套的多个 PFB；与单部位参数互斥", "JSON parts selection plan for several matching PFBs; mutually exclusive with single-part options"))
     convert.add_argument("--allow-crc-mismatch", action="store_true",
-                         help="实验选项：允许 worker 对已报告 CRC mismatch 的 PFB/USER 写回；报告会明确标记")
+                         help=T("实验选项：允许 worker 对已报告 CRC mismatch 的 PFB/USER 写回；报告会明确标记", "Experimental option: allow the worker to write back a PFB/USER with a reported CRC mismatch; the report marks it clearly"))
     convert.add_argument("--strict-unconsumed", action="store_true",
-                         help="兼容旧参数：把所有未消费资源视为错误（模型/材质默认已严格阻止）")
+                         help=T("兼容旧参数：把所有未消费资源视为错误（模型/材质默认已严格阻止）", "Legacy-compatible option: treat every unconsumed resource as an error (models/materials are already blocked strictly by default)"))
     convert.add_argument("--allow-unconsumed-resources", action="store_true",
-                         help="实验选项：允许未消费的模型/材质继续（报告列出且不会静默复制）")
+                         help=T("实验选项：允许未消费的模型/材质继续（报告列出且不会静默复制）", "Experimental option: allow unconsumed models/materials to continue (listed in the report and never copied silently)"))
     convert.add_argument("--experimental-static-only", action="store_true",
-                         help="实验选项：明确接受省略 Lua/原生插件的静态转换，不声称动态行为等价")
+                         help=T("实验选项：明确接受省略 Lua/原生插件的静态转换，不声称动态行为等价", "Experimental option: explicitly accept a static conversion that omits Lua/native plugins, without claiming dynamic behavior equivalence"))
     convert.add_argument("--allow-unverified-game-assets", action="store_true",
-                         help="实验选项：允许不完整参考目录中的未验证依赖由游戏本体提供（报告会标记）")
+                         help=T("实验选项：允许不完整参考目录中的未验证依赖由游戏本体提供（报告会标记）", "Experimental option: allow unverified dependencies from an incomplete reference directory to be provided by the game itself (marked in the report)"))
     convert.add_argument("--hide-part", dest="hide_parts", action="append",
                          choices=tuple(sorted(ALL_PARTS)),
-                         help="写入 manifest rules.hideParts；可重复指定多个部位")
+                         help=T("写入 manifest rules.hideParts；可重复指定多个部位", "Write to manifest rules.hideParts; may be repeated for multiple parts"))
     convert.add_argument("--incompatible-category", dest="incompatible_categories", action="append",
                          choices=tuple(PARTS),
-                         help="写入 manifest rules.incompatibleCategories；可重复指定多个分类")
+                         help=T("写入 manifest rules.incompatibleCategories；可重复指定多个分类", "Write to manifest rules.incompatibleCategories; may be repeated for multiple categories"))
     return parser
 
 
@@ -2508,8 +2545,8 @@ def _write_blocked_report(report: Report, requested_output: Path,
         report_json.write_text(json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         report_md = report_dir / "CONVERSION-REPORT.md"
         report_md.write_text(
-            "# OWOTS 衣橱转换报告\n\n状态：`blocked`\n\n" +
-            "\n".join(f"- **{i.severity}** `{i.code}`：{i.message}" for i in report.issues) + "\n",
+            T("# OWOTS 衣橱转换报告\n\n状态：`blocked`\n\n", "# OWOTS Wardrobe Conversion Report\n\nStatus: `blocked`\n\n") +
+            "\n".join(T(f"- **{i.severity}** `{i.code}`：{i.message}", f"- **{i.severity}** `{i.code}`: {i.message}") for i in report.issues) + "\n",
             encoding="utf-8",
         )
         report.stats["blockedReport"] = str(report_dir)
@@ -2529,7 +2566,7 @@ def run(args: argparse.Namespace) -> int:
     converter: Converter | None = None
     try:
         if not input_path.exists():
-            raise ConversionError(f"输入不存在：{input_path}")
+            raise ConversionError(T(f"输入不存在：{input_path}", f"Input does not exist: {input_path}"))
         converter = Converter(args, report)
         if args.command == "inspect":
             converter.inspect()
@@ -2539,7 +2576,7 @@ def run(args: argparse.Namespace) -> int:
                 report_path = Path(output).resolve()
                 if any(report_path == root or report_path.is_relative_to(root)
                        for root in forbidden_roots):
-                    raise ConversionError("检查报告不能写入输入或只读参考目录")
+                    raise ConversionError(T("检查报告不能写入输入或只读参考目录", "The inspection report must not be written into the input or a read-only reference directory"))
                 report_path.parent.mkdir(parents=True, exist_ok=True)
                 report_path.write_text(json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n",
                                        encoding="utf-8")
