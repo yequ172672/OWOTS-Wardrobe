@@ -2,7 +2,7 @@
 
 [简体中文](README-zh-CN.md) | **English**
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](#requirements)
 
 > **Feedback & Releases**: [GitHub](https://github.com/yequ172672/OWOTS-Wardrobe) ｜ [Caimogu (Chinese)](https://www.caimogu.cc/post/2485977.html) ｜ [Releases](https://github.com/yequ172672/OWOTS-Wardrobe/releases) ｜ [Issues](https://github.com/yequ172672/OWOTS-Wardrobe/issues) ｜ [License](LICENSE)
@@ -118,7 +118,9 @@ Feedback channels: [GitHub Issues](https://github.com/yequ172672/OWOTS-Wardrobe/
 
 ## License
 
-Released under the **MIT** license, see [LICENSE](LICENSE). Third-party components and the game-asset boundary are documented in [THIRD-PARTY-NOTICES.md](release-tools/THIRD-PARTY-NOTICES.md).
+Released under the **GNU General Public License v3.0**, see [LICENSE](LICENSE). Third-party components and the game-asset boundary are documented in [THIRD-PARTY-NOTICES.md](release-tools/THIRD-PARTY-NOTICES.md).
+
+Because the project is GPL-3.0, redistributing modified versions or bundled builds requires making the corresponding source available under the same license.
 
 > Note: `reframework/builtin-icons/` contains **native costume thumbnails** extracted from the game. They are game assets; use them locally only when you own the game, and verify your own rights before any public redistribution.
 

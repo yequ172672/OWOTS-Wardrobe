@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 自定义 REFramework native | `dinput8.dll` | 本地 `docs/LICENSE-REFramework.txt`；用户 fork：[yequ172672/REFramework-cn](https://github.com/yequ172672/REFramework-cn)，准确 commit/工作区状态由 `release-manifest.json` 记录；上游项目：[praydog/REFramework](https://github.com/praydog/REFramework) |
 | REFramework.NET / Ijwhost | `reframework/plugins/REFramework.NET.dll`、`Ijwhost.dll`、runtimeconfig | 随 REFramework.NET nightly 提供；请以对应发行版中的许可证为准：[praydog/REFramework](https://github.com/praydog/REFramework/tree/master/csharp-api) |
-| 本项目衣橱插件与共享核心 | `reframework/plugins/source/OWOTSAppearanceLab.cs` | MIT，见 `docs/LICENSE-RE-Engine-MCP.txt`；源码：[yequ172672/re-engine-mcp-CN](https://github.com/yequ172672/re-engine-mcp-CN) |
+| 本项目衣橱插件与共享核心 | `reframework/plugins/source/OWOTSAppearanceLab.cs` | **GPL-3.0**，见 `docs/LICENSE-OWOTS-Wardrobe.txt`；源码：[yequ172672/OWOTS-Wardrobe](https://github.com/yequ172672/OWOTS-Wardrobe) |
 | REFCoreDeps / AssemblyGenerator | `reframework/plugins/managed/dependencies/*.dll` 中对应文件 | REFramework.NET/REFramework 上游组件；源码和许可证见 [praydog/REFramework](https://github.com/praydog/REFramework/tree/master/csharp-api) |
 | Hexa.NET.ImGui / HexaGen.Runtime | `Hexa.NET.ImGui.dll`、`HexaGen.Runtime.dll` | MIT，完整文本见 `docs/LICENSE-Hexa.NET.txt`；许可证与源码：[Hexa.NET](https://github.com/HexaEngine/Hexa.NET) |
 | Microsoft.CodeAnalysis / CSharp | Roslyn 编译器依赖（本次运行时包为 4.11.0 系列） | MIT，完整文本见 `docs/LICENSE-Microsoft-CodeAnalysis.txt`；许可证与源码：[dotnet/roslyn](https://github.com/dotnet/roslyn) |

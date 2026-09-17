@@ -154,7 +154,7 @@ Copy-Payload $notice 'docs/THIRD-PARTY-NOTICES.md' $null $payload
 Copy-Payload $appearanceLicense 'docs/LICENSE-OWOTS-Appearance.txt' $null $payload
 Copy-Payload $hexaLicense 'docs/LICENSE-Hexa.NET.txt' $null $payload
 Copy-Payload $roslynLicense 'docs/LICENSE-Microsoft-CodeAnalysis.txt' $null $payload
-Copy-Payload (Join-Path $repoRoot 'LICENSE') 'docs/LICENSE-RE-Engine-MCP.txt' $null $payload
+Copy-Payload (Join-Path $repoRoot 'LICENSE') 'docs/LICENSE-OWOTS-Wardrobe.txt' $null $payload
 Copy-Payload (Join-Path $workspaceRoot 'REFramework-cn\LICENSE') 'docs/LICENSE-REFramework.txt' $null $payload
 Copy-Payload (Join-Path $PSScriptRoot 'Install-OWOTSAppearance.ps1') 'tools/Install-OWOTSAppearance.ps1' $null $payload
 Copy-Payload (Join-Path $PSScriptRoot 'Uninstall-OWOTSAppearance.ps1') 'tools/Uninstall-OWOTSAppearance.ps1' $null $payload

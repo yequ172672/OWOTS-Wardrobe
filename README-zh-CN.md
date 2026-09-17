@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.md)
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](#环境要求)
 
 > **反馈与发布**：[GitHub](https://github.com/yequ172672/OWOTS-Wardrobe) ｜ [踩蘑菇（中文）](https://www.caimogu.cc/post/2485977.html) ｜ [Releases](https://github.com/yequ172672/OWOTS-Wardrobe/releases) ｜ [问题反馈](https://github.com/yequ172672/OWOTS-Wardrobe/issues) ｜ [开源协议](LICENSE)
@@ -118,7 +118,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 开源协议
 
-本项目以 **MIT** 协议开源，见 [LICENSE](LICENSE)。第三方组件与游戏资产边界说明见 [THIRD-PARTY-NOTICES.md](release-tools/THIRD-PARTY-NOTICES.md)。
+本项目以 **GNU 通用公共许可证第 3 版（GPL-3.0）** 开源，见 [LICENSE](LICENSE)。第三方组件与游戏资产边界说明见 [THIRD-PARTY-NOTICES.md](release-tools/THIRD-PARTY-NOTICES.md)。
+
+由于采用 GPL-3.0，分发修改版或打包发行时需要以相同许可证提供对应源码。
 
 > 注意：`reframework/builtin-icons/` 内含从游戏解包的**原生服装缩略图**，属于游戏素材；仅在拥有该游戏的前提下随本地测试包使用，公开分发前请自行确认授权。
 
