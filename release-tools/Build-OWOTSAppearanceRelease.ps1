@@ -112,6 +112,15 @@ foreach ($file in $runtimeFiles) {
     Copy-Payload $runtimeSource $file.Relative $file.Install $payload
 }
 
+# Built-in native costume thumbnails, shipped as a built-in MOD resource set so the
+# wardrobe can show the game's own icons for its built-in entries.
+$builtinIcons = Join-Path $repoRoot 'reframework\builtin-icons'
+if (-not (Test-Path -LiteralPath $builtinIcons -PathType Container)) { throw '找不到内置图标目录 reframework\builtin-icons' }
+foreach ($icon in Get-ChildItem -LiteralPath $builtinIcons -Filter '*.png' -File) {
+    $relative = 'reframework/data/owots_appearance_lab/builtin-icons/' + $icon.Name
+    Copy-Payload $icon.FullName $relative $relative $payload
+}
+
 $builder = Join-Path $repoRoot 'appearance-core\build_lab.py'
 Ensure-File $builder '衣橱 bundle 构建脚本'
 $bundleInput = Join-Path $staging '.OWOTSAppearanceLab.generated.cs'

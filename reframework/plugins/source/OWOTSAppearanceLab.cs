@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -183,6 +183,9 @@ public static class OWOTSAppearanceLab {
         public List<AppearanceEntry> Entries;
         public int Stage;
         public bool Waiting;
+        // Atomic switching is only safe while cloak visibility stays unchanged; a
+        // hidden<->visible transition must rebuild through the native restore path.
+        public bool Atomic;
         public AppearanceOperationClock Clock = new AppearanceOperationClock(Environment.TickCount64);
     }
     static WardrobeSelectionState s_wardrobeState;
@@ -205,6 +208,13 @@ public static class OWOTSAppearanceLab {
     [ThreadStatic] static Stack<bool> s_visualScopes;
     [ThreadStatic] static Stack<int> s_visualLookups;
     static Dictionary<int, int> s_selectedParts = new Dictionary<int, int>();
+    // The menu / main-menu character is a separate PlayerUICharacter created when a
+    // menu opens.  It builds from native equipment IDs, so the MOD IDs must be
+    // requested explicitly and re-requested whenever a menu rebuilds the actor.
+    static readonly HashSet<int> s_uiAppliedParts = new HashSet<int>();
+    static ulong s_uiCharacterAddress;
+    static string s_uiCharacterStatus = "idle";
+    static volatile bool s_uiCharacterSyncEnabled;
     sealed class OutfitPart {
         public int Part, Id;
         public ManagedObject Owner;
@@ -215,8 +225,16 @@ public static class OWOTSAppearanceLab {
         public string ExpectedCatalog;
         public ManagedObject NormalCatalogOwner, HQCatalogOwner;
         public Action RemoveNormal, RemoveHQ;
+        // Companion part: an engine-owned prefab (native cloak/hair) pulled into the
+        // same change so its cloth/secondary bindings rebuild with the new body.
+        public bool Native;
     }
     static readonly List<OutfitPart> s_outfitParts = new List<OutfitPart>();
+    // Parts from the previous MOD that stay registered while the new selection is
+    // pushed through one native change; released only after the native model IDs
+    // have stopped referencing them.
+    static readonly List<OutfitPart> s_retiringParts = new List<OutfitPart>();
+    static bool s_outfitAllowReplace;
     static readonly List<OutfitPart> s_preloadParts = new List<OutfitPart>();
     static readonly Dictionary<AppearanceKind, string> s_activeMods = new Dictionary<AppearanceKind, string>();
     static AppearanceKind s_pendingKind;
@@ -230,12 +248,12 @@ public static class OWOTSAppearanceLab {
     sealed record MenuState(AppearanceEntry[] Entries, string Outfit, string Weapon, bool Busy, string Message, string[] Issues,
         WardrobeSelectionState State = null, WardrobeCompositionResult Composition = null,
         Dictionary<string, WardrobeCategory> Categories = null);
-    static MenuState s_menu = new MenuState(Array.Empty<AppearanceEntry>(), null, null, false, "就绪", Array.Empty<string>());
+    static MenuState s_menu = new MenuState(Array.Empty<AppearanceEntry>(), null, null, false, T("就绪", "Ready"), Array.Empty<string>());
     static WardrobeRegistrySnapshot s_wardrobeRegistry;
     sealed record WardrobeMenuConfirmation(string Category, string ModId, bool? Visible, string[] Declarations, string[] Names);
     static WardrobeMenuConfirmation s_confirmation;
     static string s_menuRequest;
-    static string s_menuMessage = "就绪";
+    static string s_menuMessage = T("就绪", "Ready");
     static bool s_windowOpen, s_cardMode;
     static WardrobePreferences s_preferences = new WardrobePreferences();
     static bool s_applyStartupPreferences;
@@ -277,7 +295,7 @@ public static class OWOTSAppearanceLab {
     static AppearanceSaveTransactions<WardrobeSelectionState> s_saveTransactions = new AppearanceSaveTransactions<WardrobeSelectionState>();
     static readonly Queue<AppearanceSnapshot<WardrobeSelectionState>> s_saveCommits = new Queue<AppearanceSnapshot<WardrobeSelectionState>>();
     static WardrobeSelectionState s_saveSnapshot;
-    static string s_persistenceStatus = "未启用外观记录写入";
+    static string s_persistenceStatus = T("未启用外观记录写入", "Appearance record writes disabled");
     sealed class LoadTrace { public int Slot, Results; public bool Success; }
     static readonly Dictionary<long, LoadTrace> s_loadIdentities = new Dictionary<long, LoadTrace>();
     static readonly AppearanceLoadCoordinator s_loadCoordinator = new AppearanceLoadCoordinator();
@@ -314,8 +332,10 @@ public static class OWOTSAppearanceLab {
         try {
             s_preferences = WardrobePreferences.Read(Path.Combine(s_dir, "preferences.json"));
             s_cardMode = s_preferences.Cards;
+            s_uiCharacterSyncEnabled = s_preferences.UiCharacterSync;
+            s_uiLanguage = s_preferences.UiLanguage ?? "auto";
             s_applyStartupPreferences = true;
-        } catch (Exception e) { s_menuMessage = "设置读取失败，使用默认设置：" + e.Message; }
+        } catch (Exception e) { s_menuMessage = T("设置读取失败，使用默认设置：", "Failed to read settings; using defaults: ") + e.Message; }
         LoadReloadHandoff();
         // Do not replay an old file command after UI actions or plugin reload.
         var response = Path.Combine(s_dir, "request.json");
@@ -324,8 +344,9 @@ public static class OWOTSAppearanceLab {
                 s_lastId = doc.RootElement.GetProperty("id").GetString(); } catch { }
         }
         API.LogInfo("[OWOTS Appearance Lab] Ready; native catalog probes are opt-in.");
+        try { InstallCostumeHooks(); } catch (Exception e) { s_menuMessage = T("原生菜单元数据钩子安装失败：", "Failed to install native menu metadata hooks: ") + e.Message; }
         try { ReadRegistry(); PublishMenu(); }
-        catch (Exception e) { s_menuMessage = "读取外观目录失败：" + e.Message; PublishMenu(); }
+        catch (Exception e) { s_menuMessage = T("读取外观目录失败：", "Failed to read appearance catalog: ") + e.Message; PublishMenu(); }
     }
 
     static bool TryGetProperty(JsonElement root, string name, out JsonElement value) {
@@ -461,8 +482,47 @@ public static class OWOTSAppearanceLab {
     static WardrobeSelectionState CurrentWardrobeState() {
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        return WardrobeSaveStore.Freeze(s_wardrobeState ??
-            WardrobeSelections.FromLegacy(new SavedAppearance(outfit, weapon)));
+        return WardrobeSaveStore.Freeze(s_wardrobeState ?? LegacyState(outfit, weapon));
+    }
+
+    // "runtime.wardrobe.*" identifies the lab's own physical apply entries, never an
+    // author bundle. Persisting it as a legacy reference poisons the whole selection
+    // state (Resolve reports a missing bundle and every later apply is rejected).
+    static string SanitizeLegacyId(string id) =>
+        string.IsNullOrEmpty(id) || id.StartsWith("runtime.wardrobe.", StringComparison.OrdinalIgnoreCase) ? null : id;
+
+    static WardrobeSelectionState LegacyState(string outfit, string weapon) =>
+        WardrobeSelections.FromLegacy(new SavedAppearance(SanitizeLegacyId(outfit), SanitizeLegacyId(weapon)));
+
+    // Drop any previously persisted synthetic runtime reference so an already-poisoned
+    // save record self-heals instead of permanently blocking new appearances.
+    static WardrobeSelectionState SanitizeSelections(WardrobeSelectionState state) {
+        if (state == null) return null;
+        var changed = false;
+        var requested = new Dictionary<WardrobeCategory, WardrobeSelection?>();
+        foreach (var pair in state.Requested) {
+            var selection = pair.Value;
+            if (selection != null && selection.EntryId == null && SanitizeLegacyId(selection.LegacyBundleId) == null) {
+                selection = null;
+                changed = true;
+            }
+            requested[pair.Key] = selection;
+        }
+        return changed ? new WardrobeSelectionState(requested, state.Visibility) : state;
+    }
+
+    // Keep the legacy outfit/weapon projection equal to the real requested MODs so a
+    // later FromLegacy fallback never fabricates a bundle from a physical entry id.
+    static void SyncActiveMods(WardrobeSelectionState state) {
+        if (state == null || s_wardrobeRegistry == null) return;
+        var resolved = WardrobeSelections.Resolve(state, s_wardrobeRegistry);
+        s_activeMods.Remove(AppearanceKind.Outfit);
+        s_activeMods.Remove(AppearanceKind.Weapon);
+        foreach (var pair in resolved.Composition.Effective) {
+            if (pair.Key == WardrobeCategory.Weapon) s_activeMods[AppearanceKind.Weapon] = pair.Value;
+            else if (!s_activeMods.ContainsKey(AppearanceKind.Outfit) || pair.Key == WardrobeCategory.Body)
+                s_activeMods[AppearanceKind.Outfit] = pair.Value;
+        }
     }
 
     static bool ReloadOperationBusy() {
@@ -545,6 +605,7 @@ public static class OWOTSAppearanceLab {
                 scriptResetRequiresRestart = lua.ScriptResetRequiresRestart, reason = lua.RawReason,
                 partFailure = lua.PartFailure },
             resources = new { selectedParts = s_selectedParts.Count, outfitParts = s_outfitParts.Count,
+                retiringParts = s_retiringParts.Count,
                 preloadParts = s_preloadParts.Count, aliasRegistered = s_aliasRegistered,
                 loadOwner = s_loadOwner != null, visualOwner = s_visualOwner != null,
                 registeredSupporterOwner = s_registeredSupporterOwner != null,
@@ -580,11 +641,18 @@ public static class OWOTSAppearanceLab {
             if (s_hiddenObjects.Count != 0) return false;
             if (s_loadId != null || s_loadOwner != null || s_loadPrefab != null) return false;
             ClearBodyAlias();
+            ReleaseRetiringParts(null);
             if (HasRegistered(null) || s_selectedParts.Count != 0 || s_preloadParts.Count != 0 ||
-                s_outfitParts.Count != 0 || s_registeredSupporterOwner != null || s_visualOwner != null ||
+                s_outfitParts.Count != 0 || s_retiringParts.Count != 0 ||
+                s_registeredSupporterOwner != null || s_visualOwner != null ||
                 s_loadOwner != null || s_loadPrefab != null)
                 return false;
             s_visualBodyId = -1;
+            s_uiAppliedParts.Clear();
+            s_uiCharacterStatus = "idle";
+            s_uiCharacterSyncEnabled = false;
+            s_costumeGuiOwner?.Release();
+            s_costumeGuiOwner = null;
             s_nativeSelections.Clear();
             Interlocked.Exchange(ref s_nativeMenuPending, 0);
             s_nativeMenuSync = false;
@@ -643,6 +711,7 @@ public static class OWOTSAppearanceLab {
             ConfigureNativeMenuSync(nativeRequest.RootElement);
         }
         Volatile.Write(ref s_preferences, handoff.Preferences.Validate());
+        s_uiLanguage = handoff.Preferences.UiLanguage ?? "auto";
     }
 
     static object BeginReloadResume(JsonElement request, string id) {
@@ -678,7 +747,7 @@ public static class OWOTSAppearanceLab {
                 }
                 ApplyReloadRuntimeSettings(job.Handoff);
                 s_applyStartupPreferences = false;
-                s_wardrobeRegistry = WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods"));
+                s_wardrobeRegistry = ReadWardrobeRegistry(Path.Combine(s_dir, "mods"));
                 var applyId = job.Id + ":resume";
                 StartWardrobeState(job.Handoff.State, s_wardrobeRegistry, applyId, true);
                 job.Stage = 1;
@@ -728,7 +797,7 @@ public static class OWOTSAppearanceLab {
         }
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        var state = WardrobeSaveStore.Freeze(s_wardrobeState ?? WardrobeSelections.FromLegacy(new SavedAppearance(outfit, weapon)));
+        var state = WardrobeSaveStore.Freeze(s_wardrobeState ?? LegacyState(outfit, weapon));
         WardrobeCompositionResult composition = null;
         if (s_wardrobeRegistry != null) {
             var resolution = WardrobeSelections.Resolve(state, s_wardrobeRegistry);
@@ -751,8 +820,28 @@ public static class OWOTSAppearanceLab {
         Interlocked.CompareExchange(ref s_menuRequest, request, null);
     }
 
+    // UI localization: Chinese when the operating-system UI language is Chinese, English
+    // for every other locale. Localized text never crosses into native calls or saves.
+    // System-language detection is resolved once by the static constructor so field
+    // initializers that call T() are already localized. The preference can override it
+    // with "zh"/"en"; "auto" keeps following the operating-system UI language.
+    static readonly bool s_chineseSystem;
+    static volatile string s_uiLanguage = "auto";
+    static OWOTSAppearanceLab() { s_chineseSystem = ChineseSystem(); }
+    static bool ChineseSystem() {
+        try {
+            return System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName
+                       .StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+                || System.Globalization.CultureInfo.InstalledUICulture.TwoLetterISOLanguageName
+                       .StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+        } catch { return false; }
+    }
+    static bool ChineseUi => string.Equals(s_uiLanguage, "zh", StringComparison.OrdinalIgnoreCase)
+        || (string.Equals(s_uiLanguage, "auto", StringComparison.OrdinalIgnoreCase) && s_chineseSystem);
+    static string T(string zh, string en) => ChineseUi ? zh : en;
+
     static string CategoryLabel(WardrobeCategory category) => category switch {
-        WardrobeCategory.Body => "身体", WardrobeCategory.Cloak => "披风", WardrobeCategory.Gauntlet => "护手", _ => "武器" };
+        WardrobeCategory.Body => T("身体", "Body"), WardrobeCategory.Cloak => T("披风", "Cloak"), WardrobeCategory.Gauntlet => T("护手", "Gauntlet"), _ => T("武器", "Weapon") };
     static void QueueWardrobe(string modId, bool? visible = null, string[] declarations = null, string category = null) {
         if (s_reloadFreeze) return;
         var values = new Dictionary<string, object> { ["id"] = "ui-" + Guid.NewGuid().ToString("N"),
@@ -796,7 +885,7 @@ public static class OWOTSAppearanceLab {
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
         try {
-            bool visible = ImGui.Begin("鬼武者 · 外观衣橱", ref s_windowOpen);
+            bool visible = ImGui.Begin(T("鬼武者 · 外观衣橱", "Onimusha · Wardrobe"), ref s_windowOpen);
             try { if (visible) DrawWardrobe(); }
             finally { ImGui.End(); }
         } finally { ImGui.PopStyleVar(5); ImGui.PopStyleColor(12); }
@@ -807,7 +896,7 @@ public static class OWOTSAppearanceLab {
     static readonly System.Numerics.Vector4 WardrobeGreen = new(0.46f, 0.82f, 0.65f, 1);
 
     static string AppliedName(MenuState menu, string id) {
-        if (id == null) return "原版";
+        if (id == null) return T("原版", "Native");
         foreach (var entry in menu.Entries) if (entry.Id == id) return entry.Name;
         return id;
     }
@@ -827,11 +916,11 @@ public static class OWOTSAppearanceLab {
         s_cardMode = Volatile.Read(ref s_preferences).Cards;
         if (Interlocked.Exchange(ref s_refreshIcons, 0) != 0) ReleaseIcons();
         var menu = Volatile.Read(ref s_menu);
-        ImGui.TextColored(WardrobeGold, "外观衣橱");
+        ImGui.TextColored(WardrobeGold, T("外观衣橱", "Wardrobe"));
         ImGui.SameLine();
-        ImGui.TextDisabled("服装与武器外观");
+        ImGui.TextDisabled(T("服装与武器外观", "Outfit and weapon appearances"));
         ImGui.SameLine();
-        if (ImGui.Button(s_settingsOpen ? "收起设置" : "设置")) s_settingsOpen = !s_settingsOpen;
+        if (ImGui.Button(s_settingsOpen ? T("收起设置", "Hide settings") : T("设置", "Settings"))) s_settingsOpen = !s_settingsOpen;
         ImGui.PushTextWrapPos();
         try {
             var labels = new List<string>();
@@ -839,30 +928,28 @@ public static class OWOTSAppearanceLab {
                 string selected = null;
                 menu.Composition?.Effective.TryGetValue(category, out selected);
                 bool hidden = menu.Composition?.Suppressed.ContainsKey(category) ?? false;
-                labels.Add(CategoryLabel(category) + "：" + (hidden ? "已隐藏" : AppliedName(menu, selected)));
+                labels.Add(CategoryLabel(category) + T("：", ": ") + (hidden ? T("已隐藏", "Hidden") : AppliedName(menu, selected)));
             }
             ImGui.TextUnformatted(string.Join("   |   ", labels));
         }
         finally { ImGui.PopTextWrapPos(); }
         ImGui.Separator();
-        DrawReloadControls(menu.Busy);
-        ImGui.Separator();
         var confirmation = Volatile.Read(ref s_confirmation);
         if (confirmation != null) {
-            ImGui.TextColored(WardrobeGold, "强制穿戴确认");
+            ImGui.TextColored(WardrobeGold, T("强制穿戴确认", "Force-wear confirmation"));
             ImGui.PushTextWrapPos();
             try {
-                ImGui.TextUnformatted("以下外观的作者声明隐藏此部位：" + string.Join("、", confirmation.Names));
-                ImGui.TextUnformatted("强制穿戴可能出现穿模。是否仍然穿戴？取消将保留当前外观。");
+                ImGui.TextUnformatted(T("以下外观的作者声明隐藏此部位：", "These appearances declare this part hidden: ") + string.Join(T("、", ", "), confirmation.Names));
+                ImGui.TextUnformatted(T("强制穿戴可能出现穿模。是否仍然穿戴？取消将保留当前外观。", "Forcing may cause clipping. Wear anyway? Cancel keeps the current appearance."));
             } finally { ImGui.PopTextWrapPos(); }
             ImGui.BeginDisabled(menu.Busy || Volatile.Read(ref s_menuRequest) != null);
             try {
-                if (WardrobeButton("强制穿戴", true, new(140, 38))) {
+                if (WardrobeButton(T("强制穿戴", "Force wear"), true, new(140, 38))) {
                     QueueWardrobe(confirmation.ModId, confirmation.Visible, confirmation.Declarations, confirmation.Category);
                     Volatile.Write(ref s_confirmation, null);
                 }
                 ImGui.SameLine();
-                if (ImGui.Button("取消", new System.Numerics.Vector2(110, 38))) Volatile.Write(ref s_confirmation, null);
+                if (ImGui.Button(T("取消", "Cancel"), new System.Numerics.Vector2(110, 38))) Volatile.Write(ref s_confirmation, null);
             } finally { ImGui.EndDisabled(); }
             return;
         }
@@ -870,10 +957,11 @@ public static class OWOTSAppearanceLab {
             DrawPreferences(menu.Busy, true);
             ImGui.BeginDisabled(menu.Busy || Volatile.Read(ref s_menuRequest) != null);
             try {
-                if (ImGui.Button("刷新已安装外观")) QueueMenu("registry_list");
+                if (ImGui.Button(T("刷新已安装外观", "Refresh installed appearances"))) QueueMenu("registry_list");
                 ImGui.SameLine();
-                if (ImGui.Button("重试存档外观恢复")) QueueMenu("appearance_restore");
+                if (ImGui.Button(T("重试存档外观恢复", "Retry saved-appearance restore"))) QueueMenu("appearance_restore");
             } finally { ImGui.EndDisabled(); }
+            DrawReloadControls(menu.Busy);
             ImGui.Separator();
         }
         foreach (var category in Enum.GetValues<WardrobeCategory>()) {
@@ -892,24 +980,24 @@ public static class OWOTSAppearanceLab {
         ImGui.SameLine();
         ImGui.BeginDisabled(menu.Busy || Volatile.Read(ref s_menuRequest) != null);
         try {
-            if (WardrobeButton("卡片", s_cardMode, new(70, 34)) && !s_cardMode)
+            if (WardrobeButton(T("卡片", "Cards"), s_cardMode, new(70, 34)) && !s_cardMode)
                 QueuePreferences(Volatile.Read(ref s_preferences) with { Cards = true });
             ImGui.SameLine();
-            if (WardrobeButton("列表", !s_cardMode, new(70, 34)) && s_cardMode)
+            if (WardrobeButton(T("列表", "List"), !s_cardMode, new(70, 34)) && s_cardMode)
                 QueuePreferences(Volatile.Read(ref s_preferences) with { Cards = false });
         } finally { ImGui.EndDisabled(); }
         ImGui.SetNextItemWidth(Math.Max(220, ImGui.GetContentRegionAvail().X * 0.55f));
-        ImGui.InputText("搜索名称或描述", ref s_search, 256);
+        ImGui.InputText(T("搜索名称或描述", "Search name or description"), ref s_search, 256);
         string active = null, requestedId = null, blocker = null;
         menu.Composition?.Effective.TryGetValue(s_browseCategory, out active);
         menu.Composition?.Requested.TryGetValue(s_browseCategory, out requestedId);
         menu.Composition?.Suppressed.TryGetValue(s_browseCategory, out blocker);
         if (blocker != null) {
-            ImGui.TextColored(WardrobeGold, blocker == "@user" ? "显示开关已关闭，外观选择仍保留。" : "作者声明隐藏此部位：" + AppliedName(menu, blocker));
+            ImGui.TextColored(WardrobeGold, blocker == "@user" ? T("显示开关已关闭，外观选择仍保留。", "Visibility is off; the selection is kept.") : T("作者声明隐藏此部位：", "Author declares this part hidden: ") + AppliedName(menu, blocker));
             if (blocker != "@user" && (s_browseCategory == WardrobeCategory.Cloak || s_browseCategory == WardrobeCategory.Gauntlet)) {
                 ImGui.SameLine();
                 ImGui.BeginDisabled(menu.Busy || Volatile.Read(ref s_menuRequest) != null);
-                try { if (ImGui.Button("仍要穿戴")) QueueWardrobe(null, true); }
+                try { if (ImGui.Button(T("仍要穿戴", "Wear anyway"))) QueueWardrobe(null, true); }
                 finally { ImGui.EndDisabled(); }
             }
         }
@@ -926,12 +1014,12 @@ public static class OWOTSAppearanceLab {
         bool wide = ImGui.GetContentRegionAvail().X >= 850;
         if (ImGui.BeginTable("wardrobe-columns-v2", wide ? 2 : 1, ImGuiTableFlags.Resizable)) {
             try {
-                ImGui.TableSetupColumn("浏览", ImGuiTableColumnFlags.WidthStretch, 0.58f);
-                if (wide) ImGui.TableSetupColumn("预览", ImGuiTableColumnFlags.WidthStretch, 0.42f);
+                ImGui.TableSetupColumn(T("浏览", "Browse"), ImGuiTableColumnFlags.WidthStretch, 0.58f);
+                if (wide) ImGui.TableSetupColumn(T("预览", "Preview"), ImGuiTableColumnFlags.WidthStretch, 0.42f);
                 ImGui.TableNextColumn();
                 bool visible = ImGui.BeginChild("entries-v2", new System.Numerics.Vector2(0, wide ? 460 : 300));
                 try { if (visible) {
-                    if (entries.Count == 0) ImGui.TextUnformatted("没有匹配的外观。可清空搜索或在设置中刷新。");
+                    if (entries.Count == 0) ImGui.TextUnformatted(T("没有匹配的外观。可清空搜索或在设置中刷新。", "No matching appearances. Clear the search or refresh in Settings."));
                     int columns = s_cardMode ? Math.Max(1, (int)(ImGui.GetContentRegionAvail().X / 205)) : 1;
                     if (ImGui.BeginTable("appearance-items-v2", columns)) {
                         try { foreach (var entry in entries) {
@@ -951,10 +1039,10 @@ public static class OWOTSAppearanceLab {
                                             s_focusedEntry = entry.Id; focused = entry;
                                         }
                                     } finally { if (s_cardMode) ImGui.PopStyleVar(); }
-                                    if (entry.Id == active) ImGui.TextColored(WardrobeGreen, "已应用");
-                                    else if (entry.Id == requestedId && blocker != null) ImGui.TextColored(WardrobeGold, "已选择 · 已隐藏");
-                                    else if (entry.Id == s_focusedEntry) ImGui.TextColored(WardrobeGold, "预览中");
-                                    else ImGui.TextDisabled("单击预览");
+                                    if (entry.Id == active) ImGui.TextColored(WardrobeGreen, T("已应用", "Applied"));
+                                    else if (entry.Id == requestedId && blocker != null) ImGui.TextColored(WardrobeGold, T("已选择 · 已隐藏", "Selected · Hidden"));
+                                    else if (entry.Id == s_focusedEntry) ImGui.TextColored(WardrobeGold, T("预览中", "Previewing"));
+                                    else ImGui.TextDisabled(T("单击预览", "Click to preview"));
                                 } finally { ImGui.EndGroup(); }
                                 if (s_cardMode && entry.Id == s_focusedEntry)
                                     ImGui.GetWindowDrawList().AddRect(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(),
@@ -972,27 +1060,27 @@ public static class OWOTSAppearanceLab {
                 } } finally { ImGui.EndChild(); }
                 ImGui.TableNextColumn();
                 if (focused != null) {
-                    ImGui.TextDisabled("图片预览");
+                    ImGui.TextDisabled(T("图片预览", "Image preview"));
                     DrawIcon(focused, Math.Min(280, Math.Max(120, ImGui.GetContentRegionAvail().X - 12)));
                     ImGui.PushTextWrapPos();
                     try {
                         ImGui.TextColored(WardrobeGold, focused.Name);
-                        if (focused.Author.Length > 0) ImGui.TextUnformatted("作者：" + focused.Author);
+                        if (focused.Author.Length > 0) ImGui.TextUnformatted(T("作者：", "Author: ") + focused.Author);
                         ImGui.Separator();
-                        ImGui.TextUnformatted(focused.Description.Length > 0 ? focused.Description : "作者暂未提供描述。");
+                        ImGui.TextUnformatted(focused.Description.Length > 0 ? focused.Description : T("作者暂未提供描述。", "The author did not provide a description."));
                     } finally { ImGui.PopTextWrapPos(); }
                     ImGui.Spacing();
                     bool applied = active == focused.Id;
                     ImGui.BeginDisabled(applied || menu.Busy || Volatile.Read(ref s_menuRequest) != null);
                     try {
-                        if (WardrobeButton(applied ? "已应用此外观" : menu.Busy ? "正在切换…" : "应用此外观", true,
+                        if (WardrobeButton(applied ? T("已应用此外观", "Already applied") : menu.Busy ? T("正在切换…", "Switching…") : T("应用此外观", "Apply this appearance"), true,
                             new System.Numerics.Vector2(-1, 40))) QueueWardrobe(focused.Id);
                     } finally { ImGui.EndDisabled(); }
-                    ImGui.TextDisabled("也可双击左侧条目应用");
+                    ImGui.TextDisabled(T("也可双击左侧条目应用", "Or double-click an entry to apply"));
                 }
                 ImGui.BeginDisabled(requestedId == null || menu.Busy || Volatile.Read(ref s_menuRequest) != null);
                 try {
-                    if (ImGui.Button("恢复原版" + CategoryLabel(s_browseCategory), new System.Numerics.Vector2(-1, 36)))
+                    if (ImGui.Button(T("恢复原版", "Restore native ") + CategoryLabel(s_browseCategory), new System.Numerics.Vector2(-1, 36)))
                         QueueWardrobe(null);
                 } finally { ImGui.EndDisabled(); }
             } finally { ImGui.EndTable(); }
@@ -1001,33 +1089,33 @@ public static class OWOTSAppearanceLab {
         ImGui.PushTextWrapPos();
         try {
             ImGui.TextUnformatted(menu.Message);
-            ImGui.TextDisabled("单击预览 · 双击应用 · " + Volatile.Read(ref s_preferences).Hotkey + " 键开关 · Esc 关闭");
+            ImGui.TextDisabled(T("单击预览 · 双击应用 · ", "Click to preview · Double-click to apply · ") + Volatile.Read(ref s_preferences).Hotkey + T(" 键开关 · Esc 关闭", " to toggle · Esc to close"));
             foreach (var issue in menu.Issues) ImGui.TextUnformatted(issue);
         } finally { ImGui.PopTextWrapPos(); }
     }
 
     static void DrawReloadControls(bool busy) {
         var phase = Volatile.Read(ref s_reloadPhase);
-        ImGui.TextColored(WardrobeGold, "安全热重载");
+        ImGui.TextColored(WardrobeGold, T("安全热重载", "Safe hot reload"));
         ImGui.SameLine();
-        ImGui.TextDisabled("阶段：" + phase);
+        ImGui.TextDisabled(T("阶段：", "Phase: ") + phase);
         if (s_reloadReason != null) {
             ImGui.SameLine();
             ImGui.TextDisabled(s_reloadReason);
         }
         bool prepare = phase == "idle" || phase == "failed";
         ImGui.BeginDisabled(!prepare || (busy && phase != "failed") || Volatile.Read(ref s_menuRequest) != null);
-        try { if (ImGui.Button(phase == "failed" ? "重试准备热重载" : "准备安全热重载")) QueueMenu("prepare_reload"); }
+        try { if (ImGui.Button(phase == "failed" ? T("重试准备热重载", "Retry prepare reload") : T("准备安全热重载", "Prepare safe hot reload"))) QueueMenu("prepare_reload"); }
         finally { ImGui.EndDisabled(); }
         if (phase == "ready" || phase == "handoff_pending" || phase == "resume_failed") {
             ImGui.SameLine();
             ImGui.BeginDisabled(Volatile.Read(ref s_menuRequest) != null);
-            try { if (ImGui.Button("恢复热重载状态")) QueueMenu("resume_reload"); }
+            try { if (ImGui.Button(T("恢复热重载状态", "Resume reload state"))) QueueMenu("resume_reload"); }
             finally { ImGui.EndDisabled(); }
         }
         if (phase == "preparing" || phase == "cleaning" || phase == "ready" || phase == "handoff_pending" || phase == "resume_failed") {
             ImGui.SameLine();
-            ImGui.TextDisabled("可在 request.json 中查询 reload_status");
+            ImGui.TextDisabled(T("可在 request.json 中查询 reload_status", "Query reload_status in request.json"));
         }
     }
 
@@ -1054,7 +1142,7 @@ public static class OWOTSAppearanceLab {
             ImGui.Dummy(new System.Numerics.Vector2(size, size));
             var draw = ImGui.GetWindowDrawList();
             draw.AddRectFilled(origin, origin + new System.Numerics.Vector2(size, size), 0xff292725, 4);
-            string placeholder = size < 80 ? "无图" : "暂无预览图";
+            string placeholder = size < 80 ? T("无图", "No image") : T("暂无预览图", "No preview");
             var textSize = ImGui.CalcTextSize(placeholder);
             draw.AddText(origin + new System.Numerics.Vector2((size - textSize.X) / 2, (size - textSize.Y) / 2),
                 0xffbfc5cd, placeholder);
@@ -1085,6 +1173,11 @@ public static class OWOTSAppearanceLab {
     sealed class JointRebaseEntry { public via.Joint Joint; public via.vec3 Rest; public via.vec3 Delta; }
     static List<JointRebaseEntry> s_rebaseEntries;
     static string s_rebaseModId;
+    // The menu / main-menu character uses a separate actor rig; the declared body
+    // shape must be rebased there too or the menu shows native proportions.
+    static List<JointRebaseEntry> s_uiRebaseEntries;
+    static ulong s_uiRebaseAddress;
+    static string s_uiRebaseModId;
 
     static via.vec3 Vec3(float x, float y, float z) {
         var value = REFrameworkNET.ValueType.New<via.vec3>();
@@ -1104,31 +1197,35 @@ public static class OWOTSAppearanceLab {
     }
 
     static void RebaseRestore() {
-        if (s_rebaseEntries == null) return;
-        try { foreach (var entry in s_rebaseEntries) entry.Joint.LocalPosition = entry.Rest; } catch { }
+        RestoreRebase(s_rebaseEntries);
         s_rebaseEntries = null;
         s_rebaseModId = null;
+        RestoreRebase(s_uiRebaseEntries);
+        s_uiRebaseEntries = null;
+        s_uiRebaseAddress = 0;
+        s_uiRebaseModId = null;
     }
 
-    static void RebaseTryStart() {
-        var manager = Manager();
-        var info = Alive(manager) ? manager.getControllingPlayerInfo() : null;
-        var entity = Alive(info) ? info.CharacterEntity : null;
-        var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
-        if (!UsableSupporter(supporter)) return;
-        var skeleton = EffectiveBodySkeleton();
-        if (skeleton == null) return;
-        var actor = Alive(info) ? info.Object : null;
-        if (!Alive(actor)) return;
-        var bodyType = app.cPlayerGameObjectSupporter.convertObjTypeToPartsType(app.PlayerPartsDef.PARTS_TYPE.BODY);
-        var body = supporter.getGameObject(bodyType);
-        if (!Alive(body)) return;
-        var actorTransform = actor.Transform;
-        var bodyTransform = body.Transform;
-        if (actorTransform == null || bodyTransform == null) return;
+    static void RestoreRebase(List<JointRebaseEntry> entries) {
+        if (entries == null) return;
+        try { foreach (var entry in entries) entry.Joint.LocalPosition = entry.Rest; } catch { }
+    }
+
+    static void ApplyRebase(List<JointRebaseEntry> entries) {
+        if (entries == null) return;
+        foreach (var entry in entries)
+            entry.Joint.LocalPosition =
+                Vec3(entry.Rest.x + entry.Delta.x, entry.Rest.y + entry.Delta.y, entry.Rest.z + entry.Delta.z);
+    }
+
+    // Shared by the world actor and the menu character: derive the per-joint rest delta
+    // from the manifest bind positions (or the equipped body mesh's own rest).
+    static List<JointRebaseEntry> BuildRebaseEntries(via.Transform rootTransform, via.Transform bodyTransform,
+        WardrobeSkeleton skeleton) {
+        if (rootTransform == null || bodyTransform == null) return null;
         var entries = new List<JointRebaseEntry>();
         foreach (var name in skeleton.JointNames) {
-            var rootJoint = actorTransform.getJointByName(name);
+            var rootJoint = rootTransform.getJointByName(name);
             if (rootJoint == null) continue;
             var rootRest = rootJoint.BaseLocalPosition;
             // Manifest bind positions win when the converter declared them; a
@@ -1146,8 +1243,47 @@ public static class OWOTSAppearanceLab {
             if (Math.Abs(dx) + Math.Abs(dy) + Math.Abs(dz) <= 0.0002f) continue;
             entries.Add(new JointRebaseEntry { Joint = rootJoint, Rest = rootRest, Delta = Vec3(dx, dy, dz) });
         }
-        s_rebaseEntries = entries;
+        return entries;
+    }
+
+    static void RebaseTryStart() {
+        var manager = Manager();
+        var info = Alive(manager) ? manager.getControllingPlayerInfo() : null;
+        var entity = Alive(info) ? info.CharacterEntity : null;
+        var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+        if (!UsableSupporter(supporter)) return;
+        var skeleton = EffectiveBodySkeleton();
+        if (skeleton == null) return;
+        var actor = Alive(info) ? info.Object : null;
+        if (!Alive(actor)) return;
+        var bodyType = app.cPlayerGameObjectSupporter.convertObjTypeToPartsType(app.PlayerPartsDef.PARTS_TYPE.BODY);
+        var body = supporter.getGameObject(bodyType);
+        if (!Alive(body)) return;
+        s_rebaseEntries = BuildRebaseEntries(actor.Transform, body.Transform, skeleton);
         s_rebaseModId = null;
+    }
+
+    static void UiRebaseTryStart(app.PlayerManager manager, app.PlayerUICharacter ui) {
+        var skeleton = EffectiveBodySkeleton();
+        if (skeleton == null) return;
+        var uiRoot = Alive(manager) ? manager.getControllingPlayerUI() : null;
+        if (!Alive(uiRoot)) return;
+        var bodyType = app.cPlayerGameObjectSupporter.convertObjTypeToPartsType(app.PlayerPartsDef.PARTS_TYPE.BODY);
+        var body = ui.getGameObject(bodyType);
+        if (!Alive(body)) return;
+        var entries = BuildRebaseEntries(uiRoot.Transform, body.Transform, skeleton);
+        if (entries == null) return;
+        s_uiRebaseEntries = entries;
+        s_uiRebaseAddress = ((IProxyable)ui).GetAddress();
+        s_uiRebaseModId = AppliedBodyModId();
+    }
+
+    static string AppliedBodyModId() {
+        var state = s_wardrobeState;
+        var registry = s_wardrobeRegistry;
+        if (state == null || registry == null) return null;
+        var resolved = WardrobeSelections.Resolve(state, registry);
+        return resolved.Composition.Effective.TryGetValue(WardrobeCategory.Body, out var modId) ? modId : null;
     }
 
     // Late phase (same point the plugin already uses for final visibility
@@ -1159,32 +1295,52 @@ public static class OWOTSAppearanceLab {
         if (s_stopped || s_reloadFreeze) return;
         try {
             if (!Volatile.Read(ref s_preferences).IndependentSkeleton) { RebaseRestore(); return; }
-            if (s_rebaseEntries == null) { RebaseTryStart(); return; }
-            foreach (var entry in s_rebaseEntries)
-                entry.Joint.LocalPosition =
-                    Vec3(entry.Rest.x + entry.Delta.x, entry.Rest.y + entry.Delta.y, entry.Rest.z + entry.Delta.z);
+            if (EffectiveBodySkeleton() == null) { RebaseRestore(); return; }
+            if (s_rebaseEntries == null) RebaseTryStart();
+            ApplyRebase(s_rebaseEntries);
+            if (!s_uiCharacterSyncEnabled) return;
+            var manager = API.GetManagedSingletonT<app.PlayerManager>();
+            var ui = UiCharacter(manager);
+            if (ui == null) { RestoreRebase(s_uiRebaseEntries); s_uiRebaseEntries = null; s_uiRebaseAddress = 0; return; }
+            ulong address = ((IProxyable)ui).GetAddress();
+            if (s_uiRebaseEntries == null || s_uiRebaseAddress != address || s_uiRebaseModId != AppliedBodyModId()) {
+                RestoreRebase(s_uiRebaseEntries);
+                UiRebaseTryStart(manager, ui);
+            }
+            ApplyRebase(s_uiRebaseEntries);
         } catch { RebaseRestore(); }
     }
 
+    static string LanguageLabel(string language) => language switch {
+        "zh" => "中文", "en" => "English", _ => T("自动（跟随系统）", "Auto (system)") };
+
     static void DrawPreferences(bool busy, bool expanded = false) {
-        if (!expanded && !ImGui.CollapsingHeader("设置")) return;
+        if (!expanded && !ImGui.CollapsingHeader(T("设置", "Settings"))) return;
         ImGui.BeginDisabled(busy || Volatile.Read(ref s_menuRequest) != null);
         try {
             var current = Volatile.Read(ref s_preferences);
-            if (ImGui.BeginCombo("开关快捷键", current.Hotkey == "Slash" ? "/ ?" : current.Hotkey)) {
+            if (ImGui.BeginCombo(T("开关快捷键", "Toggle hotkey"), current.Hotkey == "Slash" ? "/ ?" : current.Hotkey)) {
                 try { foreach (var key in WardrobePreferences.SupportedHotkeys)
                     if (ImGui.Selectable(key == "Slash" ? "/ ?" : key, key == current.Hotkey)) QueuePreferences(current with { Hotkey = key });
                 } finally { ImGui.EndCombo(); }
             }
+            if (ImGui.BeginCombo(T("界面语言", "Interface language"), LanguageLabel(current.UiLanguage))) {
+                try { foreach (var language in WardrobePreferences.SupportedLanguages)
+                    if (ImGui.Selectable(LanguageLabel(language), language == current.UiLanguage))
+                        QueuePreferences(current with { UiLanguage = language });
+                } finally { ImGui.EndCombo(); }
+            }
             bool persistence = current.Persistence, automatic = current.AutomaticRestore, native = current.NativeMenuSync;
-            if (ImGui.Checkbox("跟随存档记录外观", ref persistence))
+            if (ImGui.Checkbox(T("跟随存档记录外观", "Record appearance with saves"), ref persistence))
                 QueuePreferences(current with { Persistence = persistence, AutomaticRestore = persistence && automatic });
             ImGui.BeginDisabled(!persistence);
-            try { if (ImGui.Checkbox("读档后自动恢复外观（实验）", ref automatic)) QueuePreferences(current with { AutomaticRestore = automatic }); }
+            try { if (ImGui.Checkbox(T("读档后自动恢复外观（实验）", "Auto-restore appearance after load (experimental)"), ref automatic)) QueuePreferences(current with { AutomaticRestore = automatic }); }
             finally { ImGui.EndDisabled(); }
-            if (ImGui.Checkbox("跟随原生菜单的明确选择（实验）", ref native)) QueuePreferences(current with { NativeMenuSync = native });
+            if (ImGui.Checkbox(T("跟随原生菜单的明确选择（实验）", "Follow explicit native-menu choices (experimental)"), ref native)) QueuePreferences(current with { NativeMenuSync = native });
             bool skeleton = current.IndependentSkeleton;
-            if (ImGui.Checkbox("独立骨架：按服装自动切换体型", ref skeleton)) QueuePreferences(current with { IndependentSkeleton = skeleton });
+            if (ImGui.Checkbox(T("独立骨架：按服装自动切换体型", "Independent skeleton: switch body shape per outfit"), ref skeleton)) QueuePreferences(current with { IndependentSkeleton = skeleton });
+            bool atomicSwitch = current.AtomicSwitch;
+            if (ImGui.Checkbox(T("无闪烁切换（推荐）", "Flicker-free switch (recommended)"), ref atomicSwitch)) QueuePreferences(current with { AtomicSwitch = atomicSwitch });
         } finally { ImGui.EndDisabled(); }
     }
 
@@ -1198,6 +1354,8 @@ public static class OWOTSAppearanceLab {
             using var native = JsonDocument.Parse(JsonSerializer.Serialize(new { enabled = preferences.NativeMenuSync }));
             ConfigureNativeMenuSync(native.RootElement);
         }
+        s_uiCharacterSyncEnabled = preferences.UiCharacterSync;
+        s_uiLanguage = preferences.UiLanguage ?? "auto";
         Volatile.Write(ref s_preferences, preferences);
         if (persist) preferences.Write(Path.Combine(s_dir, "preferences.json"));
         return new { preferences, saved = persist };
@@ -1229,6 +1387,11 @@ public static class OWOTSAppearanceLab {
         s_saveTracing = false;
         s_visualBodyId = -1;
         s_selectedParts = new Dictionary<int, int>();
+        s_uiAppliedParts.Clear();
+        s_uiCharacterStatus = "idle";
+        s_uiCharacterSyncEnabled = false;
+        try { s_costumeGuiOwner?.Release(); } catch { }
+        s_costumeGuiOwner = null;
         if (s_transitionRequest != null) {
             Respond(s_transitionRequest, false, new { error = "Appearance transition interrupted by plugin unload" });
             s_transitionRequest = null;
@@ -1286,7 +1449,7 @@ public static class OWOTSAppearanceLab {
         if (s_applyStartupPreferences && !s_reloadFreeze) {
             s_applyStartupPreferences = false;
             try { ApplyPreferences(s_preferences, false); }
-            catch (Exception e) { s_menuMessage = "设置应用失败：" + e.Message; PublishMenu(); }
+            catch (Exception e) { s_menuMessage = T(T("设置应用失败：", "Failed to apply settings: "), "Failed to apply settings: ") + e.Message; PublishMenu(); }
         }
         if (!s_reloadFreeze) FlushAppearanceSaves();
         if (!s_reloadFreeze && s_restoreJob != null) {
@@ -1296,7 +1459,7 @@ public static class OWOTSAppearanceLab {
             if (s_transitionRequest == s_restoreJob.OperationId && s_transitionRequest != null) s_transitionDeadline += excluded;
             if (s_outfitRequest == s_restoreJob.OperationId && s_outfitRequest != null) s_outfitDeadline += excluded;
             if (paused) {
-                s_menuMessage = "等待继续游戏后恢复存档外观";
+                s_menuMessage = T("等待继续游戏后恢复存档外观", "Resume the game to restore the saved appearance");
                 PublishMenu();
                 return;
             }
@@ -1342,6 +1505,7 @@ public static class OWOTSAppearanceLab {
         if (!s_reloadFreeze) {
         if (PollRestore()) return;
         if (PollNativeMenuSync()) return;
+        PollUiCharacter();
         }
         var path = Path.Combine(s_dir, "request.json");
         var menuRequest = Interlocked.Exchange(ref s_menuRequest, null);
@@ -1370,7 +1534,14 @@ public static class OWOTSAppearanceLab {
                 "visibility_status" => new { parts = s_hiddenParts, tracked = s_hiddenObjects.Count,
                     frames = s_visibilityFrames, status = s_visibilityStatus },
                 "visibility_audit" => VisibilityAudit(request),
-                "wardrobe_registry" => WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods")),
+                "ui_character_inspect" => InspectUiCharacter(),
+                "ui_character_refresh" => InspectUiCharacter(true),
+                "ui_character_apply" => ConfigureUiCharacterSync(true),
+                "ui_character_disable" => ConfigureUiCharacterSync(false),
+                "costume_menu_inspect" => InspectCostumeMenu(),
+                "inspect_cloak" => InspectCloak(),
+                "native_costumes" => NativeCostumes(),
+                "wardrobe_registry" => ReadWardrobeRegistry(Path.Combine(s_dir, "mods")),
                 "wardrobe_status" => WardrobeStatus(),
                 "wardrobe_select" => BeginWardrobeApply(request, id),
                 "wardrobe_visibility" => BeginWardrobeApply(request, id),
@@ -1423,7 +1594,7 @@ public static class OWOTSAppearanceLab {
             bool loading = details.TryGetProperty("phase", out var phase) && phase.GetString().StartsWith("loading", StringComparison.Ordinal);
             if (!loading || !ok) {
                 s_nativeMenuRequest = null;
-                s_menuMessage = ok ? "已跟随原生菜单的服装选择" : "原生选择同步未完成，请恢复游戏运行后重试取消外观";
+                s_menuMessage = ok ? T("已跟随原生菜单的服装选择", "Followed the native menu's outfit choice") : T("原生选择同步未完成，请恢复游戏运行后重试取消外观", "Native selection sync incomplete; resume the game and retry clearing");
                 AppendSaveTrace(new { phase = "native_menu_sync_finished", ok, result });
             }
             PublishMenu();
@@ -1435,7 +1606,7 @@ public static class OWOTSAppearanceLab {
             if (!ok || !loading) {
                 s_restoreJob.Waiting = false;
                 if (!ok) {
-                    s_restoreJob.Issues.Add(details.TryGetProperty("error", out var error) ? error.GetString() : "恢复失败");
+                    s_restoreJob.Issues.Add(details.TryGetProperty("error", out var error) ? error.GetString() : T("恢复失败", "Restore failed"));
                     if (s_restoreJob.Stage == 0) s_restoreJob.Stage = 3;
                     else s_restoreJob.Stage++;
                 } else s_restoreJob.Stage++;
@@ -1445,9 +1616,9 @@ public static class OWOTSAppearanceLab {
         }
         if (id.StartsWith("ui-", StringComparison.Ordinal)) {
             var details = JsonSerializer.SerializeToElement(result);
-            s_menuMessage = !ok ? "操作失败：" + (details.TryGetProperty("error", out var error) ? error.GetString() : "未知错误") :
+            s_menuMessage = !ok ? T("操作失败：", "Operation failed: ") + (details.TryGetProperty("error", out var error) ? error.GetString() : T("未知错误", "unknown error")) :
                 details.TryGetProperty("phase", out var phase) && phase.GetString().StartsWith("loading", StringComparison.Ordinal)
-                    ? "正在切换，请稍候…" : "操作完成";
+                    ? T("正在切换，请稍候…", "Switching, please wait…") : T("操作完成", "Done");
         }
         PublishMenu();
         var json = JsonSerializer.Serialize(new { id, pid = Environment.ProcessId, ok,
@@ -1531,7 +1702,7 @@ public static class OWOTSAppearanceLab {
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
         var state = WardrobeSaveStore.Freeze(s_wardrobeState ??
-            WardrobeSelections.FromLegacy(new SavedAppearance(outfit, weapon)));
+            LegacyState(outfit, weapon));
         // Snapshot only: do not refresh registry/icons, commit saves or start native work.
         var resolution = s_wardrobeRegistry == null ? null : WardrobeSelections.Resolve(state, s_wardrobeRegistry);
         return new {
@@ -1672,11 +1843,11 @@ public static class OWOTSAppearanceLab {
         if (s_wardrobeJob != null || s_transitionRequest != null || s_outfitRequest != null || s_loadId != null || s_restoreJob != null)
             throw new InvalidOperationException("Appearance operation already in progress");
         if (s_nativeMenuSync) throw new InvalidOperationException("Disable legacy native-menu synchronization before four-category selection");
-        var registry = WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods"));
+        var registry = ReadWardrobeRegistry(Path.Combine(s_dir, "mods"));
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_wardrobeRegistry = registry;
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        var state = s_wardrobeState ?? WardrobeSelections.FromLegacy(new SavedAppearance(outfit, weapon));
+        var state = s_wardrobeState ?? LegacyState(outfit, weapon);
         var category = request.GetProperty("category").GetString() switch {
             "body" => WardrobeCategory.Body, "cloak" => WardrobeCategory.Cloak,
             "gauntlet" => WardrobeCategory.Gauntlet, "weapon" => WardrobeCategory.Weapon,
@@ -1708,7 +1879,7 @@ public static class OWOTSAppearanceLab {
                         modId, showRequest ? visible.GetBoolean() : null, new List<string>(required).ToArray(), names.ToArray()));
                 }
                 return new { phase = "confirmation_required", category = category.ToString(), declarations = required,
-                    names, message = "作者声明隐藏此部位，强制穿戴可能出现穿模。是否强制穿戴？" };
+                    names, message = T("作者声明隐藏此部位，强制穿戴可能出现穿模。是否强制穿戴？", "The author declares this part hidden; forcing may clip. Force wear?") };
             }
         } else if (request.TryGetProperty("confirmedDeclarations", out var unsupportedConfirmation))
             throw new InvalidOperationException("Only cloak and gauntlet support force confirmation");
@@ -1724,21 +1895,45 @@ public static class OWOTSAppearanceLab {
         VisibilitySupporter();
         if (resolved.Composition.HiddenParts.Count > 0 && via.GameObject.REFType.GetMethod("set_DrawSelf") == null)
             throw new InvalidOperationException("Visibility setter unavailable");
-        var physical = new Dictionary<AppearanceKind, List<AppearancePart>>();
+        var physical = new List<AppearancePart>();
+        bool hasOutfit = false;
         foreach (var selected in resolved.Composition.Effective) {
-            var kind = selected.Key == WardrobeCategory.Weapon ? AppearanceKind.Weapon : AppearanceKind.Outfit;
-            if (!physical.TryGetValue(kind, out var parts)) physical.Add(kind, parts = new List<AppearancePart>());
+            if (selected.Key != WardrobeCategory.Weapon) hasOutfit = true;
             foreach (var part in registry.Entries[selected.Value].Parts) {
                 foreach (var hidden in resolved.Composition.HiddenParts)
                     if (part.Part == hidden) throw new InvalidOperationException("Active provided part is also hidden: " + hidden);
-                parts.Add(new AppearancePart((int)Enum.Parse<app.PlayerPartsDef.PARTS_TYPE>(part.Part), part.Catalog, part.Prefab));
+                physical.Add(new AppearancePart((int)Enum.Parse<app.PlayerPartsDef.PARTS_TYPE>(part.Part), part.Catalog, part.Prefab));
             }
+            // Built-in body entries also carry engine-forced hair/gauntlet parts; add them
+            // as native parts of the same change unless another selected entry provides them.
+            if (s_nativeExtraParts.TryGetValue(selected.Value, out var extras))
+                foreach (var extra in extras)
+                    if (!physical.Exists(part => part.Part == extra.Part)) {
+                        // Best-effort: never let a forced companion break the whole apply.
+                        bool present = false;
+                        try {
+                            var catalog = Manager().Catalog.getPlayerPartsList((app.PlayerPartsDef.PARTS_TYPE)extra.Part);
+                            present = Alive(catalog) && catalog.ContainsKey(extra.NativeId);
+                        } catch { }
+                        if (present) physical.Add(new AppearancePart(extra.Part, "", extra.NativeId.ToString()));
+                    }
         }
-        var entries = new List<AppearanceEntry>();
-        foreach (var pair in physical)
-            entries.Add(new AppearanceEntry("runtime.wardrobe." + pair.Key.ToString().ToLowerInvariant(),
-                "四分类组合", pair.Key, pair.Value.AsReadOnly(), "runtime composition"));
-        s_wardrobeJob = new WardrobeApplyJob { Id = id, State = state, Plan = resolved.Composition, Entries = entries };
+        // Every selected part is pushed through a single native change request. Splitting
+        // outfit and weapon caused one visible model rebuild per group; the parts list
+        // already carries the real per-part types used for matching and release.
+        //
+        // The runtime ID must be specific to the exact MOD combination: the native
+        // checkModelChange compares model IDs, so reusing one ID for a different MOD
+        // would neither rebuild the model nor let old and new rows coexist. A stable
+        // per-combination key gives distinct IDs on a real switch and identical IDs
+        // when the same combination is re-applied.
+        string comboKey = string.Join("+", resolved.Composition.Effective
+            .OrderBy(pair => pair.Key).Select(pair => pair.Value));
+        var entries = physical.Count == 0 ? new List<AppearanceEntry>() : new List<AppearanceEntry> {
+            new AppearanceEntry("runtime.wardrobe." + (hasOutfit ? "outfit" : "weapon") + "." + comboKey, T("四分类组合", "Four-category composition"),
+                hasOutfit ? AppearanceKind.Outfit : AppearanceKind.Weapon, physical.AsReadOnly(), "runtime composition") };
+        s_wardrobeJob = new WardrobeApplyJob { Id = id, State = state, Plan = resolved.Composition, Entries = entries,
+            Atomic = Volatile.Read(ref s_preferences).AtomicSwitch };
         return new { phase = "loading_wardrobe", requested = state.Requested, effective = resolved.Composition.Effective };
     }
 
@@ -1748,7 +1943,15 @@ public static class OWOTSAppearanceLab {
             if (job.Clock.ActiveMilliseconds > 60000) throw new TimeoutException("Four-category native transition timed out");
             if (job.Waiting) return;
             if (job.Error != null) throw new InvalidOperationException(job.Error);
-            if (job.Stage > job.Entries.Count) {
+            // Atomic mode swaps the selection in one native change but skips the native
+            // rebuild of untouched parts (a native cloak keeps stale cloth bindings).
+            // Non-atomic restores first, which forces the full rebuild but shows the
+            // native model briefly. The mode is fixed when the job starts.
+            bool atomic = job.Atomic;
+            int stepCount = atomic
+                ? (job.Entries.Count == 0 ? 1 : job.Entries.Count)
+                : job.Entries.Count + 1;
+            if (job.Stage >= stepCount) {
                 // Selection publication follows native completion, never only manifest validation.
                 var info = Manager().getControllingPlayerInfo();
                 var entity = Alive(info) ? info.CharacterEntity : null;
@@ -1762,9 +1965,11 @@ public static class OWOTSAppearanceLab {
                 }
                 foreach (var part in s_selectedParts)
                     if (supporter._ModelIDs[part.Key] != part.Value) return;
+                ReleaseRetiringParts(supporter);
                 using var visibility = JsonDocument.Parse(JsonSerializer.Serialize(new { parts = job.Plan.HiddenParts }));
                 var status = SetVisibility(visibility.RootElement);
                 s_wardrobeState = job.State;
+                SyncActiveMods(job.State);
                 Volatile.Write(ref s_saveSnapshot, WardrobeSaveStore.Freeze(job.State));
                 if (s_restoreJob == null) s_restoreUnresolved = false;
                 s_wardrobeJob = null;
@@ -1773,19 +1978,47 @@ public static class OWOTSAppearanceLab {
                 return;
             }
             job.StepId = job.Id + ":step:" + job.Stage;
-            job.Waiting = true;
-            if (job.Stage == 0) {
+            // Withdraw step: atomic mode skips it, non-atomic runs it once before the
+            // entries (Stage 0) so the native re-creates every part including the cloak.
+            bool withdrawStep = atomic ? job.Entries.Count == 0 : job.Stage == 0;
+            if (withdrawStep) {
+                job.Waiting = true;
                 using var off = JsonDocument.Parse("{\"parts\":[]}");
                 SetVisibility(off.RootElement);
                 Respond(job.StepId, true, BeginTransition(job.StepId, null, 0));
             } else {
-                var entry = job.Entries[job.Stage - 1];
+                var entry = job.Entries[atomic ? job.Stage : job.Stage - 1];
                 if (!s_registrySlots.TryGetValue(entry.Id, out int slot)) {
                     if (s_registrySlots.Count >= 3000) throw new InvalidOperationException("Runtime MOD ID reserve exhausted");
                     slot = s_registrySlots.Count + 1;
                     s_registrySlots.Add(entry.Id, slot);
                 }
-                Respond(job.StepId, true, BeginOutfit(job.StepId, entry, slot));
+                // Re-applying the exact current selection would collide with its own
+                // catalog rows; treat it as a no-op instead of a redundant rebuild.
+                bool sameSelection = s_selectedParts.Count > 0;
+                foreach (var part in entry.Parts)
+                    if (!s_selectedParts.TryGetValue(part.Part, out int current) || current != 900001 + slot * 32 + part.Part) {
+                        sameSelection = false;
+                        break;
+                    }
+                if (sameSelection) { job.Stage++; return; }
+                List<int> companions = null;
+                if (atomic) {
+                    // Apply the target visibility BEFORE the rebuild: recreating a cloak while
+                    // it is still hidden leaves its cloth uninitialised and it tears when shown.
+                    if (job.Stage == 0) {
+                        using var desired = JsonDocument.Parse(JsonSerializer.Serialize(new { parts = job.Plan.HiddenParts }));
+                        SetVisibility(desired.RootElement);
+                    }
+                    var provided = new HashSet<int>();
+                    foreach (var part in entry.Parts) provided.Add(part.Part);
+                    foreach (var partType in s_clothCompanionParts)
+                        if (!provided.Contains(partType)) (companions ??= new List<int>()).Add(partType);
+                }
+                job.Waiting = true;
+                // Atomic mode keeps the current MOD applied while the new prefabs preload,
+                // then swaps the selection in one native change.
+                Respond(job.StepId, true, BeginOutfit(job.StepId, entry, slot, atomic && job.Stage == 0, companions));
             }
         } catch (Exception e) {
             s_wardrobeState = job.State;
@@ -1806,6 +2039,10 @@ public static class OWOTSAppearanceLab {
     }
 
     static readonly string[] s_visibilityParts = { "HEAD", "HAIR", "CLOAK", "CLOAK_CLOSE", "CLOAK_OPEN", "GAUNTLET" };
+    // Engine parts carrying cloth (GpuCloth) or secondary motion (Chain2). Atomic mode
+    // must rebuild them with the new body or their bindings stay stale.
+    static readonly int[] s_clothCompanionParts = {
+        (int)app.PlayerPartsDef.PARTS_TYPE.CLOAK, (int)app.PlayerPartsDef.PARTS_TYPE.HAIR };
     static object InspectPartVisibility() {
         var supporter = VisibilitySupporter();
         var result = new List<object>();
@@ -1934,15 +2171,15 @@ public static class OWOTSAppearanceLab {
             }
             var supporter = VisibilitySupporter();
             var targets = new Dictionary<ulong, via.GameObject>();
-            foreach (var part in s_hiddenParts) {
-                var root = supporter.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(part));
-                if (!Alive(root) || !root.Valid) continue; // Some optional cloak variants are not instantiated.
-                foreach (var obj in Descendants(root)) {
-                    if (!obj.Valid) continue;
-                    var mesh = obj.getComponent(via.render.Mesh.REFType.RuntimeType.As<_System.Type>());
-                    if (Alive(mesh)) targets[((IProxyable)obj).GetAddress()] = obj;
-                }
-            }
+            foreach (var part in s_hiddenParts)
+                CollectPartMeshes(supporter.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(part)), targets);
+            // The menu / main-menu character is a second instance that must hide the
+            // same author-declared parts, otherwise the cloak/pieces reappear in menus.
+            try {
+                var ui = UiCharacter(API.GetManagedSingletonT<app.PlayerManager>());
+                if (ui != null) foreach (var part in s_hiddenParts)
+                    CollectPartMeshes(ui.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(part)), targets);
+            } catch { }
             ReleaseHiddenObjects(new HashSet<ulong>(targets.Keys));
             var next = new Dictionary<ulong, HiddenObject>(s_hiddenObjects);
             foreach (var pair in targets) if (!next.ContainsKey(pair.Key))
@@ -1962,6 +2199,407 @@ public static class OWOTSAppearanceLab {
             // A changing/temporarily absent player does not erase the requested declaration.
             s_visibilityStatus = "waiting: " + e.Message;
         }
+    }
+
+    // --- Menu / main-menu character: shared cosmetic identity -----------------
+    // PlayerManager owns an independent UI character (PlayerUICharacter) used by
+    // the costume screen and the system menu.  It is created on demand and reads
+    // native equipment IDs, so the active MOD IDs must be pushed explicitly with
+    // requestChangeModelPlayerUI and re-pushed after every menu rebuild.
+    static app.PlayerUICharacter UiCharacter(app.PlayerManager manager) {
+        try {
+            if (!Alive(manager) || !manager.isPlayerUICreateComplete()) return null;
+            var ui = manager.getControllingPlayerCharacterUI();
+            return Alive(ui) ? ui : null;
+        } catch { return null; }
+    }
+
+    static int NativeEquipId(app.PlayerManager manager, int part) {
+        var info = manager.getControllingPlayerInfo();
+        var context = Alive(info) ? info.Context : null;
+        var player = Alive(context) ? context.Player : null;
+        if (!Alive(player)) throw new InvalidOperationException("Player context unavailable");
+        return app.PlayerManager.getCurrentEquipID((app.PlayerPartsDef.PARTS_TYPE)part, player);
+    }
+
+    static void CollectPartMeshes(via.GameObject root, Dictionary<ulong, via.GameObject> targets) {
+        if (!Alive(root) || !root.Valid) return; // Some optional cloak variants are not instantiated.
+        foreach (var obj in Descendants(root)) {
+            if (!obj.Valid) continue;
+            var mesh = obj.getComponent(via.render.Mesh.REFType.RuntimeType.As<_System.Type>());
+            if (Alive(mesh)) targets[((IProxyable)obj).GetAddress()] = obj;
+        }
+    }
+
+    // One native change for every differing part. Requesting parts one poll at a time
+    // made the four weapon/sheath rows of the menu character visibly load in sequence.
+    static void RequestUiCharacterChange(app.PlayerUICharacter ui, List<(int Part, int Id)> changes) {
+        Method method = null;
+        foreach (var candidate in app.PlayerUICharacter.REFType.Methods)
+            if (candidate.Name == "requestChangeModel" && candidate.GetNumParams() == 1) { method = candidate; break; }
+        if (method == null) throw new InvalidOperationException("UI character list change overload missing");
+        var listType = method.GetParameters()[0].Type;
+        var owner = listType.CreateInstance(0)?.Globalize();
+        if (!Alive(owner)) throw new InvalidOperationException("Cannot allocate UI change list");
+        var arguments = new List<ManagedObject>();
+        try {
+            var list = owner.As<REFrameworkNET.Collections.IList<app.PlayerPartsDef.cChangeArgument>>();
+            foreach (var change in changes) {
+                var argumentOwner = app.PlayerPartsDef.cChangeArgument.REFType.CreateInstance(1)?.Globalize();
+                if (!Alive(argumentOwner)) throw new InvalidOperationException("Cannot allocate UI change argument");
+                arguments.Add(argumentOwner);
+                var argument = argumentOwner.As<app.PlayerPartsDef.cChangeArgument>();
+                argument.PartsType = (app.PlayerPartsDef.PARTS_TYPE)change.Part;
+                argument.ID = change.Id;
+                list.Add(argument);
+            }
+            ui.requestChangeModel(list);
+        } finally {
+            foreach (var argument in arguments) argument.Release();
+            owner.Release();
+        }
+    }
+
+    static void PollUiCharacter() {
+        if (s_stopped || s_reloadFreeze) return;
+        if (s_selectedParts.Count == 0 && s_uiAppliedParts.Count == 0) return;
+        // Writes stay opt-in until the live UI-character API is confirmed, so a
+        // first deployment can inspect the object graph without requesting models.
+        if (!s_uiCharacterSyncEnabled && s_uiAppliedParts.Count == 0) return;
+        try {
+            var manager = API.GetManagedSingletonT<app.PlayerManager>();
+            var ui = UiCharacter(manager);
+            if (ui == null) { s_uiCharacterStatus = "waiting:ui_char_unavailable"; return; }
+            if (manager.isChangingModelPlayerUI() || ui.isChangeModelProcessing()) {
+                s_uiCharacterStatus = "waiting:changing";
+                return;
+            }
+            if (ui._ModelIDs == null) { s_uiCharacterStatus = "waiting:no_model_ids"; return; }
+            s_uiCharacterAddress = ((IProxyable)ui).GetAddress();
+            var changes = new List<(int Part, int Id)>();
+            // Restore parts that are no longer part of the active selection.
+            foreach (var part in s_uiAppliedParts.ToArray()) {
+                if (s_selectedParts.ContainsKey(part)) continue;
+                int native = NativeEquipId(manager, part);
+                if (ui._ModelIDs[part] == native) { s_uiAppliedParts.Remove(part); continue; }
+                changes.Add((part, native));
+            }
+            foreach (var pair in s_selectedParts) {
+                s_uiAppliedParts.Add(pair.Key);
+                if (ui._ModelIDs[pair.Key] != pair.Value) changes.Add((pair.Key, pair.Value));
+            }
+            if (changes.Count == 0) { s_uiCharacterStatus = "active"; return; }
+            RequestUiCharacterChange(ui, changes);
+            s_uiCharacterStatus = "applying:" + changes.Count;
+        } catch (Exception e) { s_uiCharacterStatus = "waiting:" + e.Message; }
+    }
+
+    // Per-body visual declaration lookup (head/hair/cloak visibility, fixed hair/gauntlet).
+    static app.user_data.PlayerModelVisualSettingParam.cBodySetting BodySettingFor(int bodyId) {
+        try {
+            var visuals = API.GetResourceManager().CreateUserData("app.user_data.PlayerModelVisualSettingParam",
+                "gamedesign/action/player/data/common/playermodelvisualsettingparam.user");
+            var param = Alive(visuals) ? visuals.As<app.user_data.PlayerModelVisualSettingParam>() : null;
+            var settings = Alive(param) ? param._BodySettingArray : null;
+            if (settings == null) return null;
+            for (int i = 0; i < settings.Length; i++) {
+                var setting = settings[i];
+                if (Alive(setting) && Alive(setting.BodyID) && setting.BodyID.Value == bodyId) return setting;
+            }
+        } catch { }
+        return null;
+    }
+
+    // Read-only enumeration of the game's built-in costume/weapon/gauntlet/cloak table.
+    // Foundation for exposing native entries inside the wardrobe with DLC gating.
+    static object NativeCostumes() {
+        var resource = API.GetResourceManager().CreateUserData("app.user_data.CostumeItemTable",
+            "gamedesign/gui/costumechange/costumeitemdata.user");
+        if (!Alive(resource)) return new { available = false, reason = "costume item table unavailable" };
+        var table = resource.As<app.user_data.CostumeItemTable>();
+        if (!Alive(table)) return new { available = false, reason = "costume item table type mismatch" };
+        var list = table._ItemList;
+        var rows = new List<object>();
+        int count = 0;
+        try {
+            if (list != null) {
+                count = list.Length;
+                for (int i = 0; i < count; i++) {
+                    var item = list[i];
+                    if (!Alive(item)) { rows.Add(new { index = i, alive = false }); continue; }
+                    rows.Add(new { index = i, itemId = (int)item._ItemID,
+                        body = (int)item._PlayerBodyID, cloak = (int)item._PlayerCloakID,
+                        gauntlet = (int)item._PlayerGauntletID, weapon = (int)item._PlayerWeaponsID,
+                        texture = (int)item._TextureID, condition = item._Condition.ToString(),
+                        npc = (int)item._NpcIndex, npcParts = (int)item._NpcPartsID,
+                        restrictCloak = item._RestrictChangeCloak, restrictGauntlet = item._RestrictChangeGauntlet });
+                }
+            }
+        } catch (Exception e) { rows.Add(new { error = e.Message }); }
+        var bodies = new List<object>();
+        try {
+            var seen = new HashSet<int>();
+            if (list != null) for (int i = 0; i < count; i++) {
+                var item = list[i];
+                if (!Alive(item) || (int)item._NpcIndex >= 0 || !seen.Add((int)item._PlayerBodyID)) continue;
+                int bodyId = (int)item._PlayerBodyID;
+                var setting = BodySettingFor(bodyId);
+                bool found = Alive(setting);
+                bodies.Add(new { bodyId, found,
+                    invisibleHead = found && setting.IsInvisibleHead,
+                    visibleCloak = found && setting.IsVisibleCloak,
+                    fixHair = found && Alive(setting.FixHairID) ? setting.FixHairID.Value : (int?)null,
+                    fixGauntlet = found && Alive(setting.FixGauntletID) ? setting.FixGauntletID.Value : (int?)null,
+                    fixBow = found && Alive(setting.FixBowID) ? setting.FixBowID.Value : (int?)null,
+                    invisibleWakizashi = found && setting.IsInvisibleWakizashi,
+                    invisibleSageo = found && setting.IsInvisibleSageo });
+            }
+        } catch (Exception e) { bodies.Add(new { error = e.Message }); }
+        return new { available = true, count, rows, bodies };
+    }
+
+    // --- Built-in (native) appearances -----------------------------------------
+    // The game's own costume table is exposed as wardrobe entries. They are applied
+    // through the existing synthetic-ID appearance pipeline, so no native equipment or
+    // save field is written. A missing engine prefab (e.g. an uninstalled DLC asset)
+    // makes the entry refuse instead of building a broken model.
+    static readonly Dictionary<string, WardrobeManifestEntry> s_nativeEntries =
+        new Dictionary<string, WardrobeManifestEntry>(StringComparer.OrdinalIgnoreCase);
+    // Per-body forced companion parts (e.g. FixGauntletID / FixHairID) that the engine
+    // applies together with a body costume but that are not body-category parts.
+    static readonly Dictionary<string, List<(int Part, int NativeId)>> s_nativeExtraParts =
+        new Dictionary<string, List<(int Part, int NativeId)>>(StringComparer.OrdinalIgnoreCase);
+    static long s_nextNativeScan;
+
+    // Localized item name for a built-in entry; falls back to null when unavailable.
+    static string NativeItemName(int itemId) {
+        try {
+            var data = API.GetResourceManager().CreateUserData("app.user_data.ItemData",
+                "gamedesign/dataexcel/itemdata.user");
+            var table = Alive(data) ? data.As<app.user_data.ItemData>() : null;
+            if (!Alive(table)) return null;
+            var row = table.getDataByFixedId(itemId);
+            if (!Alive(row)) return null;
+            var text = via.gui.message.get(row.NameGuid);
+            return text?.ToString();
+        } catch { return null; }
+    }
+
+    static void RefreshNativeEntries() {
+        s_nextNativeScan = Environment.TickCount64 + 5000;
+        try {
+            var resource = API.GetResourceManager().CreateUserData("app.user_data.CostumeItemTable",
+                "gamedesign/gui/costumechange/costumeitemdata.user");
+            if (!Alive(resource)) return;
+            var table = resource.As<app.user_data.CostumeItemTable>();
+            if (!Alive(table)) return;
+            var list = table._ItemList;
+            if (list == null) return;
+            int total = list.Length;
+            var players = new List<app.user_data.CostumeItemTable.cCostumeItemData>();
+            for (int i = 0; i < total; i++) {
+                var item = list[i];
+                if (Alive(item) && (int)item._NpcIndex < 0) players.Add(item);
+            }
+            if (players.Count == 0) return;
+            int Mode(Func<app.user_data.CostumeItemTable.cCostumeItemData, int> get) {
+                var counts = new Dictionary<int, int>();
+                foreach (var item in players) {
+                    int value = get(item);
+                    counts[value] = counts.TryGetValue(value, out var count) ? count + 1 : 1;
+                }
+                int best = 0, bestCount = -1;
+                foreach (var pair in counts) if (pair.Value > bestCount) { best = pair.Key; bestCount = pair.Value; }
+                return best;
+            }
+            int baseBody = Mode(item => (int)item._PlayerBodyID);
+            int baseCloak = Mode(item => (int)item._PlayerCloakID);
+            int baseGauntlet = Mode(item => (int)item._PlayerGauntletID);
+            int baseWeapon = Mode(item => (int)item._PlayerWeaponsID);
+            // Authoritative per-body visibility declarations (e.g. a mascot body hides
+            // head/hair and the cloak). This is what the native menu itself uses.
+            var bodySettings = new Dictionary<int, app.user_data.PlayerModelVisualSettingParam.cBodySetting>();
+            try {
+                var visuals = API.GetResourceManager().CreateUserData("app.user_data.PlayerModelVisualSettingParam",
+                    "gamedesign/action/player/data/common/playermodelvisualsettingparam.user");
+                var param = Alive(visuals) ? visuals.As<app.user_data.PlayerModelVisualSettingParam>() : null;
+                var settings = Alive(param) ? param._BodySettingArray : null;
+                if (settings != null) for (int i = 0; i < settings.Length; i++) {
+                    var setting = settings[i];
+                    if (!Alive(setting) || !Alive(setting.BodyID)) continue;
+                    int value = setting.BodyID.Value;
+                    if (!bodySettings.ContainsKey(value)) bodySettings.Add(value, setting);
+                }
+            } catch { }
+            // FixHairID/FixGauntletID use a default sentinel that is not a model ID; only a
+            // value deviating from the most common one is a real forced part.
+            int defaultFixHair = 0, defaultFixGauntlet = 0;
+            if (bodySettings.Count > 0) {
+                var hairCounts = new Dictionary<int, int>();
+                var gauntletCounts = new Dictionary<int, int>();
+                foreach (var setting in bodySettings.Values) {
+                    if (Alive(setting.FixHairID)) { int v = setting.FixHairID.Value; hairCounts[v] = hairCounts.TryGetValue(v, out var c) ? c + 1 : 1; }
+                    if (Alive(setting.FixGauntletID)) { int v = setting.FixGauntletID.Value; gauntletCounts[v] = gauntletCounts.TryGetValue(v, out var c) ? c + 1 : 1; }
+                }
+                int best = -1;
+                foreach (var pair in hairCounts) if (pair.Value > best) { best = pair.Value; defaultFixHair = pair.Key; }
+                best = -1;
+                foreach (var pair in gauntletCounts) if (pair.Value > best) { best = pair.Value; defaultFixGauntlet = pair.Key; }
+            }
+            s_nativeEntries.Clear();
+            s_nativeExtraParts.Clear();
+            // Built-in icon files are shipped with the wardrobe as a built-in mod and
+            // indexed per category in table order.
+            var iconCounts = new Dictionary<WardrobeCategory, int>();
+            string iconsSource = Path.Combine(s_dir, "builtin-icons", "icons.json");
+            for (int i = 0; i < total; i++) {
+                var item = list[i];
+                if (!Alive(item) || (int)item._NpcIndex >= 0) continue; // NPC rows are not player appearances.
+                int body = (int)item._PlayerBodyID, cloak = (int)item._PlayerCloakID;
+                int gauntlet = (int)item._PlayerGauntletID, weapon = (int)item._PlayerWeaponsID;
+                int nativeId; WardrobeCategory category;
+                var partNames = new List<string>();
+                var hidden = new List<string>();
+                List<(int Part, int NativeId)> extras = null;
+                if (weapon != baseWeapon) {
+                    // One native weapon ID covers all four weapon rows, each from its own catalog.
+                    category = WardrobeCategory.Weapon; nativeId = weapon;
+                    partNames.AddRange(new[] { "WEAPON", "SHEATH", "WEAPON_SUB", "SHEATH_SUB" });
+                } else if (gauntlet != baseGauntlet) {
+                    category = WardrobeCategory.Gauntlet; nativeId = gauntlet; partNames.Add("GAUNTLET");
+                } else if (cloak != baseCloak) {
+                    category = WardrobeCategory.Cloak; nativeId = cloak; partNames.Add("CLOAK");
+                } else if (body != baseBody) {
+                    category = WardrobeCategory.Body; nativeId = body; partNames.Add("BODY");
+                    if (bodySettings.TryGetValue(body, out var setting)) {
+                        if (setting.IsInvisibleHead) { hidden.Add("HEAD"); hidden.Add("HAIR"); }
+                        if (!setting.IsVisibleCloak) hidden.Add("CLOAK");
+                        // The engine forces these parts with the body; omitting them left the
+                        // previous/native gauntlet or hair in place and caused clipping.
+                        extras = new List<(int Part, int NativeId)>();
+                        if (!setting.IsInvisibleHead && Alive(setting.FixHairID) && setting.FixHairID.Value != 0
+                            && setting.FixHairID.Value != defaultFixHair)
+                            extras.Add((3, setting.FixHairID.Value));
+                        if (Alive(setting.FixGauntletID) && setting.FixGauntletID.Value != 0
+                            && setting.FixGauntletID.Value != defaultFixGauntlet)
+                            extras.Add((4, setting.FixGauntletID.Value));
+                        if (extras.Count == 0) extras = null;
+                    }
+                } else continue;
+                if (nativeId == 0) continue;
+                string id = "native." + category.ToString().ToLowerInvariant() + "." + i;
+                var rules = new WardrobeRuleEntry(id, category, partNames.AsReadOnly(),
+                    hidden.AsReadOnly(), Array.Empty<WardrobeCategory>());
+                WardrobeComposition.Validate(rules);
+                bool dlc = item._Condition == app.user_data.CostumeItemTable.DISPLAY_CONDITION.PURCHASED_DLC;
+                bool unlocked = item._Condition == app.user_data.CostumeItemTable.DISPLAY_CONDITION.NONE
+                    || item._Condition == app.user_data.CostumeItemTable.DISPLAY_CONDITION.OWNED;
+                string realName = NativeItemName((int)item._ItemID);
+                string name = (string.IsNullOrWhiteSpace(realName) ? T("内置·", "Built-in · ") + CategoryLabel(category) + " #" + (int)item._ItemID : realName)
+                    + (dlc ? T("（需 DLC）", " (DLC)") : unlocked ? "" : T("（提前解锁）", " (early unlock)"));
+                var parts = new List<WardrobePart>();
+                foreach (var partName in partNames) parts.Add(new WardrobePart(partName, "", nativeId.ToString()));
+                string description = (dlc ? T("需要拥有对应 DLC 才能穿戴。", "Requires owning the corresponding DLC.") : T("游戏内置条目，可在本系统中提前穿戴。", "Built-in game entry; can be worn early here."))
+                    + (hidden.Count > 0 ? T(" 原版会隐藏：", " Native hides: ") + string.Join(T("、", ", "), hidden) + T("。", ".") : "");
+                // Icons exist only for the base catalogue; index them per category in table order.
+                string icon = null;
+                if (!dlc) {
+                    int index = iconCounts.TryGetValue(category, out var count) ? count : 0;
+                    iconCounts[category] = index + 1;
+                    string prefix = category switch {
+                        WardrobeCategory.Body => "body", WardrobeCategory.Cloak => "cloak",
+                        WardrobeCategory.Gauntlet => "gauntlet", _ => "weapon" };
+                    icon = "tex_" + prefix + "_" + index.ToString("00") + "_imlm4.png";
+                }
+                s_nativeEntries[id] = new WardrobeManifestEntry(rules, name, parts.AsReadOnly(), description, "", icon, iconsSource, null);
+                if (extras != null) s_nativeExtraParts[id] = extras;
+            }
+        } catch { }
+    }
+
+    // Registry view used everywhere: author packages plus the built-in entries.
+    static WardrobeRegistrySnapshot ReadWardrobeRegistry(string directory) {
+        var snapshot = WardrobeRegistry.ReadDirectory(directory);
+        if (s_nativeEntries.Count == 0 && Environment.TickCount64 >= s_nextNativeScan) RefreshNativeEntries();
+        if (s_nativeEntries.Count == 0) return snapshot;
+        var entries = new Dictionary<string, WardrobeManifestEntry>(snapshot.Entries, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in s_nativeEntries) if (!entries.ContainsKey(pair.Key)) entries.Add(pair.Key, pair.Value);
+        return snapshot with { Entries = entries };
+    }
+
+    // Read-only cloth/Chain2 snapshot of the cloak pieces on both instances, used to
+    // diagnose lost cloth physics after a native restore.
+    static object InspectCloak() {
+        var results = new List<object>();
+        var parts = new[] { "CLOAK", "CLOAK_CLOSE", "CLOAK_OPEN" };
+        try {
+            var info = Manager().getControllingPlayerInfo();
+            var entity = Alive(info) ? info.CharacterEntity : null;
+            var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            foreach (var part in parts) {
+                if (!UsableSupporter(supporter)) { results.Add(new { role = "world." + part, unavailable = true }); continue; }
+                var obj = supporter.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(part));
+                results.Add(new { role = "world." + part, value = DescribeObject(obj) });
+            }
+        } catch (Exception e) { results.Add(new { role = "world", error = e.Message }); }
+        try {
+            var manager = API.GetManagedSingletonT<app.PlayerManager>();
+            var ui = UiCharacter(manager);
+            foreach (var part in parts) {
+                if (ui == null) { results.Add(new { role = "ui." + part, unavailable = true }); continue; }
+                var obj = ui.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(part));
+                results.Add(new { role = "ui." + part, value = DescribeObject(obj) });
+            }
+        } catch (Exception e) { results.Add(new { role = "ui", error = e.Message }); }
+        return new { hiddenParts = s_hiddenParts.ToArray(), visibility = s_visibilityStatus,
+            tracked = s_hiddenObjects.Count, results };
+    }
+
+    static object ConfigureUiCharacterSync(bool enabled) {
+        if (enabled) {
+            s_uiCharacterSyncEnabled = true;
+            PollUiCharacter();
+        } else {
+            s_uiCharacterSyncEnabled = false;
+            PollUiCharacter();
+        }
+        return new { enabled = s_uiCharacterSyncEnabled, status = s_uiCharacterStatus,
+            appliedParts = s_uiAppliedParts.ToArray() };
+    }
+
+    static object InspectUiCharacter(bool refresh = false) {
+        var manager = API.GetManagedSingletonT<app.PlayerManager>();
+        bool created = Alive(manager) && manager.isPlayerUICreateComplete();
+        var ui = UiCharacter(manager);
+        object models = null, objects = null, root = null;
+        if (ui != null) {
+            var ids = new List<object>();
+            try {
+                for (int part = 0; part < 13 && ui._ModelIDs != null && part < ui._ModelIDs.Length; part++)
+                    ids.Add(new { part, id = ui._ModelIDs[part] });
+            } catch { }
+            models = ids;
+            var parts = new List<object>();
+            foreach (var name in new[] { "BODY", "HEAD", "HAIR", "CLOAK", "GAUNTLET" }) {
+                try {
+                    var go = ui.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(name));
+                    parts.Add(new { part = name, value = DescribeObject(go) });
+                } catch (Exception e) { parts.Add(new { part = name, error = e.Message }); }
+            }
+            objects = parts;
+        }
+        try {
+            var uiRoot = Alive(manager) ? manager.getControllingPlayerUI() : null;
+            root = DescribeObject(uiRoot);
+        } catch (Exception e) { root = new { error = e.Message }; }
+        if (refresh) PollUiCharacter();
+        return new { created, changing = Alive(manager) && manager.isChangingModelPlayerUI(),
+            syncEnabled = s_uiCharacterSyncEnabled,
+            uiRebaseJoints = s_uiRebaseEntries?.Count ?? 0, uiRebaseModId = s_uiRebaseModId,
+            hiddenParts = s_hiddenParts.ToArray(),
+            address = s_uiCharacterAddress == 0 ? null : "0x" + s_uiCharacterAddress.ToString("X"),
+            appliedParts = s_uiAppliedParts.ToArray(), selectedParts = s_selectedParts,
+            status = s_uiCharacterStatus, models, objects, root };
     }
 
     // CG updates can overwrite visibility after UpdateBehavior. Reapply only to
@@ -2177,14 +2815,50 @@ public static class OWOTSAppearanceLab {
         } catch { ClearLoad(); throw; }
     }
 
+    static bool s_costumeHooksInstalled;
+    static ManagedObject s_costumeGuiOwner;
+    static int s_costumeObservedIndex = -1;
+    static int s_costumeObservedCount = -1;
+    static string s_costumeObservedName;
+
+    // Always-on, read-only capture of the native costume screen so its list/model-preview
+    // structure can be inspected without depending on the legacy native-menu sync.
+    static void InstallCostumeHooks() {
+        if (s_costumeHooksInstalled || s_stopped) return;
+        MethodHook.Create(NamedMethod(app.GUI030106.REFType, "onOpen"), false).AddPre(args => {
+            if (!s_stopped && !s_reloadFreeze && args.Length > 1) {
+                try {
+                    s_costumeGuiOwner?.Release();
+                    s_costumeGuiOwner = ManagedObject.FromAddress(args[1]).Globalize();
+                } catch { }
+                if (s_nativeMenuSync) s_nativeSelections.Open(args[1]);
+            }
+            return PreHookResult.Continue;
+        });
+        // Read-only observation of the per-slot update so the MOD display can later
+        // target the right row; never writes the native item, text or texture here.
+        MethodHook.Create(NamedMethod(app.GUI030106.cCostumeList.REFType, "onUpdateItem"), false).AddPre(args => {
+            if (s_stopped || s_reloadFreeze || args.Length < 3) return PreHookResult.Continue;
+            try {
+                var list = ManagedObject.FromAddress(args[1]).As<app.GUI030106.cCostumeList>();
+                var itemArgs = ManagedObject.FromAddress(args[2]).As<via.gui.OnUpdateFSGItemArgs>();
+                if (Alive(list) && Alive(itemArgs)) {
+                    s_costumeObservedIndex = itemArgs.GridIndex;
+                    s_costumeObservedCount = list._DisplayItemCount;
+                    var name = list._TxtCostumeName;
+                    s_costumeObservedName = Alive(name) ? name.Message : null;
+                }
+            } catch { }
+            return PreHookResult.Continue;
+        });
+        s_costumeHooksInstalled = true;
+    }
+
     static object ConfigureNativeMenuSync(JsonElement request) {
         if (request.TryGetProperty("enabled", out var value)) {
             bool enabled = value.GetBoolean();
+            InstallCostumeHooks();
             if (enabled && !s_nativeMenuHooks) {
-                MethodHook.Create(NamedMethod(app.GUI030106.REFType, "onOpen"), false).AddPre(args => {
-                    if (!s_stopped && !s_reloadFreeze && s_nativeMenuSync && args.Length > 1) s_nativeSelections.Open(args[1]);
-                    return PreHookResult.Continue;
-                });
                 MethodHook.Create(NamedMethod(app.GUI030106.cCostumeList.REFType, "callback_Decide"), false)
                     .AddPre(args => {
                         (ulong Owner, int Category) decision = (0, -1);
@@ -2243,6 +2917,75 @@ public static class OWOTSAppearanceLab {
         try { Respond(s_nativeMenuRequest, true, BeginTransition(s_nativeMenuRequest, null, 0, kind)); }
         catch (Exception e) { Respond(s_nativeMenuRequest, false, new { error = e.Message }); }
         return true;
+    }
+
+    // Read-only dump of the captured native costume screen. Used to plan the MOD row
+    // without mutating the native list, texts or textures.
+    static object InspectCostumeMenu() {
+        var owner = s_costumeGuiOwner;
+        if (owner == null) return new { available = false, reason = "costume menu not opened in this session" };
+        if (!Alive(owner)) return new { available = false, reason = "captured menu was released" };
+        var gui = owner.As<app.GUI030106>();
+        if (!Alive(gui)) return new { available = false, reason = "captured owner is not GUI030106" };
+        var list = gui._CostumeList;
+        var items = new List<object>();
+        try {
+            if (Alive(list) && list._DisplayItemList != null) {
+                int count = list._DisplayItemList.Count;
+                for (int i = 0; i < Math.Min(count, 64); i++) {
+                    var item = list._DisplayItemList[i];
+                    if (!Alive(item)) { items.Add(new { index = i, alive = false }); continue; }
+                    items.Add(new { index = i, itemId = (int)item._ItemID, body = (int)item._PlayerBodyID,
+                        cloak = (int)item._PlayerCloakID, gauntlet = (int)item._PlayerGauntletID,
+                        weapon = (int)item._PlayerWeaponsID, texture = (int)item._TextureID,
+                        npcIndex = (int)item._NpcIndex, npcParts = (int)item._NpcPartsID,
+                        condition = item._Condition.ToString(), restrictCloak = item._RestrictChangeCloak,
+                        restrictGauntlet = item._RestrictChangeGauntlet });
+                }
+            }
+        } catch (Exception e) { items.Add(new { error = e.Message }); }
+        object preview = null;
+        try {
+            var module = gui._ModelPreviewModule;
+            preview = Alive(module) ? new { previewType = module._PreviewType.ToString(),
+                playerParts = module._CurrentPlayerParts.ToString(),
+                playerLoadEnd = module.isPlayerCostumeLoadEnd(), previewing = module.IsPreviewing } : null;
+        } catch (Exception e) { preview = new { error = e.Message }; }
+        var selected = new List<int>();
+        try {
+            var ids = gui._SelectedCostumeID;
+            if (ids != null) for (int i = 0; i < ids.Length; i++) selected.Add(ids[i]);
+        } catch { }
+        return new { available = true,
+            observed = new { index = s_costumeObservedIndex, count = s_costumeObservedCount, name = s_costumeObservedName },
+            thumbnailPath = Alive(list) ? list._TexThumbnailPath : null,
+            textureControls = Alive(list) && list._ThumbnailTextureCtrls != null ? list._ThumbnailTextureCtrls.Count : -1,
+            thumbnailResources = ThumbnailResources(list),
+            address = "0x" + ((IProxyable)gui).GetAddress().ToString("X"),
+            category = gui._SelectedCategoy.ToString(),
+            selected, displayCount = Alive(list) ? list._DisplayItemCount : -1,
+            itemCount = Alive(list) && list._DisplayItemList != null ? list._DisplayItemList.Count : -1,
+            preview, items };
+    }
+
+    // Read-only: per-slot thumbnail texture resource paths, used to extract the icons.
+    static object ThumbnailResources(app.GUI030106.cCostumeList list) {
+        var result = new List<object>();
+        try {
+            var controls = Alive(list) ? list._ThumbnailTextureCtrls : null;
+            if (controls == null) return result;
+            for (int i = 0; i < Math.Min(controls.Count, 64); i++) {
+                var control = controls[i];
+                string path = null;
+                try {
+                    var info = Alive(control) ? control._TextureInfo : null;
+                    var resource = Alive(info) ? info._TextureResource : null;
+                    path = Alive(resource) ? resource.ResourcePath : null;
+                } catch { }
+                result.Add(new { index = i, path });
+            }
+        } catch (Exception e) { result.Add(new { error = e.Message }); }
+        return result;
     }
 
     static object InspectCostumeMethods() {
@@ -2565,14 +3308,14 @@ public static class OWOTSAppearanceLab {
                 using var traceRequest = JsonDocument.Parse("{\"enabled\":true}");
                 TraceSaveLoads(traceRequest.RootElement);
                 s_persistenceEnabled = true;
-                s_persistenceStatus = "已启用保存记录，等待游戏保存成功";
+                s_persistenceStatus = T("已启用保存记录，等待游戏保存成功", "Record enabled; waiting for a successful game save");
             } else {
                 s_persistenceEnabled = false;
                 s_autoRestoreEnabled = false;
                 s_loadCoordinator.ClearPending();
                 s_saveTransactions = new AppearanceSaveTransactions<WardrobeSelectionState>();
                 lock (s_saveTraceLock) s_saveCommits.Clear();
-                s_persistenceStatus = "外观记录写入已关闭";
+                s_persistenceStatus = T("外观记录写入已关闭", "Appearance record writes disabled");
             }
         }
         s_autoRestoreEnabled = nextAutomatic;
@@ -2595,9 +3338,9 @@ public static class OWOTSAppearanceLab {
         var current = CurrentSaveKey(API.GetManagedSingletonT<app.SaveDataManager>(), key.Slot);
         if (current != key) return new { available = false, reason = "Player save identity changed since the observed load" };
         var saved = new WardrobeSaveStore(Path.Combine(s_dir, "saves")).Read(key);
-        var registry = WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods"));
+        var registry = ReadWardrobeRegistry(Path.Combine(s_dir, "mods"));
         return new { available = saved.Record != null, key, error = saved.Error,
-            plan = saved.Record == null ? null : WardrobeSelections.Resolve(saved.Record.Choices, registry) };
+            plan = saved.Record == null ? null : WardrobeSelections.Resolve(SanitizeSelections(saved.Record.Choices) ?? saved.Record.Choices, registry) };
     }
 
     static object QueueSavedRestore() {
@@ -2615,13 +3358,15 @@ public static class OWOTSAppearanceLab {
                 var key = ticket.Key;
                 var saved = new WardrobeSaveStore(Path.Combine(s_dir, "saves")).Read(key);
                 if (saved.Error != null) throw new InvalidOperationException(saved.Error);
-                var choices = saved.Record?.Choices ?? WardrobeSelections.FromLegacy(new SavedAppearance(null, null));
-                var plan = WardrobeSelections.Resolve(choices, WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods")));
+                // Older builds could persist a synthetic runtime reference; drop it so a
+                // poisoned record does not permanently block every later appearance apply.
+                var choices = SanitizeSelections(saved.Record?.Choices) ?? WardrobeSelections.FromLegacy(new SavedAppearance(null, null));
+                var plan = WardrobeSelections.Resolve(choices, ReadWardrobeRegistry(Path.Combine(s_dir, "mods")));
                 s_restoreJob = new RestoreJob { Key = key, Ticket = ticket, Choices = choices, Clock = new AppearanceOperationClock(Environment.TickCount64) };
                 s_restoreUnresolved = true;
                 if (saved.Error != null) s_restoreJob.Issues.Add(saved.Error);
                 foreach (var issue in plan.Issues) s_restoreJob.Issues.Add(issue);
-                s_menuMessage = "正在恢复存档外观…";
+                s_menuMessage = T("正在恢复存档外观…", "Restoring saved appearance…");
                 PublishMenu();
             }
             var job = s_restoreJob;
@@ -2633,15 +3378,15 @@ public static class OWOTSAppearanceLab {
             if (!s_loadCoordinator.IsCurrent(job.Ticket)) {
                 AppendSaveTrace(new { phase = "appearance_restore_superseded", key = job.Key });
                 s_restoreJob = null;
-                s_menuMessage = "新读档已开始，停止上一份存档的后续外观恢复";
+                s_menuMessage = T("新读档已开始，停止上一份存档的后续外观恢复", "A new load started; stopping the previous restore");
                 PublishMenu();
                 return true;
             }
-            if (job.Clock.ActiveMilliseconds >= 60000) throw new TimeoutException("等待角色模型更新超时（不计菜单暂停时间），可稍后重试恢复");
+            if (job.Clock.ActiveMilliseconds >= 60000) throw new TimeoutException(T("等待角色模型更新超时（不计菜单暂停时间），可稍后重试恢复", "Timed out waiting for the character model (menu pause excluded); retry later"));
             var manager = API.GetManagedSingletonT<app.SaveDataManager>();
             if (!Alive(manager)) return true;
             if (CurrentSaveKey(manager, job.Key.Slot) != job.Key)
-                throw new InvalidOperationException("存档身份已变化，停止旧外观恢复");
+                throw new InvalidOperationException(T("存档身份已变化，停止旧外观恢复", "Save identity changed; stopping the old restore"));
             var playerManager = API.GetManagedSingletonT<app.PlayerManager>();
             if (!Alive(playerManager) || !Alive(playerManager.Catalog)) return true;
             var info = playerManager.getControllingPlayerInfo();
@@ -2657,7 +3402,7 @@ public static class OWOTSAppearanceLab {
                 foreach (var selected in s_selectedParts)
                     if (supporter._ModelIDs[selected.Key] != selected.Value) return true;
             if (job.Stage >= 1) {
-                s_menuMessage = job.Issues.Count == 0 ? "存档外观恢复完成" : "外观恢复提示：" + string.Join("；", job.Issues);
+                s_menuMessage = job.Issues.Count == 0 ? T("存档外观恢复完成", "Saved appearance restored") : T("外观恢复提示：", "Restore notes: ") + string.Join(T("；", "; "), job.Issues);
                 AppendSaveTrace(new { phase = "appearance_restore_finished", key = job.Key, issues = job.Issues.ToArray() });
                 s_restoreUnresolved = job.Stage >= 3;
                 s_restoreJob = null;
@@ -2668,11 +3413,11 @@ public static class OWOTSAppearanceLab {
             job.Waiting = true;
             try {
                 Respond(job.OperationId, true, StartWardrobeState(job.Choices,
-                    WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods")), job.OperationId, true));
+                    ReadWardrobeRegistry(Path.Combine(s_dir, "mods")), job.OperationId, true));
             } catch (Exception e) { Respond(job.OperationId, false, new { error = e.Message }); }
             return true;
         } catch (Exception e) {
-            s_menuMessage = "外观恢复失败：" + e.Message;
+            s_menuMessage = T("外观恢复失败：", "Appearance restore failed: ") + e.Message;
             s_restoreUnresolved = true;
             AppendSaveTrace(new { phase = "appearance_restore_failed", error = e.Message });
             s_restoreJob = null;
@@ -2718,10 +3463,10 @@ public static class OWOTSAppearanceLab {
         }
         try {
             new WardrobeSaveStore(Path.Combine(s_dir, "saves")).Write(record.Key, record.Choices);
-            s_persistenceStatus = "外观记录已保存：槽 " + record.Key.Slot;
+            s_persistenceStatus = T("外观记录已保存：槽 ", "Appearance record saved: slot ") + record.Key.Slot;
             AppendSaveTrace(new { phase = "appearance_committed", key = record.Key, choices = record.Choices });
         } catch (Exception e) {
-            s_persistenceStatus = "外观记录写入失败：" + e.Message;
+            s_persistenceStatus = T("外观记录写入失败：", "Appearance record write failed: ") + e.Message;
             AppendSaveTrace(new { phase = "appearance_commit_failed", key = record.Key, error = e.Message });
         }
     }
@@ -2840,7 +3585,7 @@ public static class OWOTSAppearanceLab {
     }
 
     static object ReadRegistry() {
-        s_wardrobeRegistry = WardrobeRegistry.ReadDirectory(Path.Combine(s_dir, "mods"));
+        s_wardrobeRegistry = ReadWardrobeRegistry(Path.Combine(s_dir, "mods"));
         s_registry = AppearanceRegistry.ReadDirectory(Path.Combine(s_dir, "mods"));
         Interlocked.Exchange(ref s_refreshIcons, 1);
         return new { entries = s_registry.Entries, issues = s_registry.Issues, activeModId = s_activeModId,
@@ -2886,6 +3631,7 @@ public static class OWOTSAppearanceLab {
         var id = s_transitionRequest;
         try {
             ClearBodyAlias(s_transitionKind);
+            ReleaseRetiringParts(null);
             if (HasRegistered(s_transitionKind)) {
                 if (Environment.TickCount64 < s_transitionDeadline) return;
                 throw new TimeoutException("Native restoration is still pending; old resources retained. Retry clear when the player is available.");
@@ -2902,20 +3648,64 @@ public static class OWOTSAppearanceLab {
         }
     }
 
-    static object BeginOutfit(string id, AppearanceEntry entry = null, int slot = 0) {
+    // Resolve an engine-owned prefab by model ID and pull it into the pending change.
+    // A declared built-in entry fails hard when its asset is absent; an optional cloth
+    // companion is simply skipped.
+    static void AddNativePart(int partType, int nativeId, int slot, HashSet<int> provided, string failure) {
+        if (provided.Contains(partType)) return;
+        if (nativeId != 0) {
+            var manager = Manager();
+            var entries = manager.Catalog.getPlayerPartsList((app.PlayerPartsDef.PARTS_TYPE)partType);
+            if (Alive(entries) && entries.ContainsKey(nativeId)) {
+                var prefab = entries[nativeId];
+                if (Alive(prefab)) {
+                    s_preloadParts.Add(new OutfitPart { Part = partType, Id = 900001 + slot * 32 + partType,
+                        Prefab = prefab, Native = true, ExpectedPrefab = prefab.Path });
+                    provided.Add(partType);
+                    return;
+                }
+            }
+        }
+        if (failure != null) throw new InvalidOperationException(failure);
+    }
+
+    static object BeginOutfit(string id, AppearanceEntry entry = null, int slot = 0, bool allowReplace = false,
+        List<int> companions = null) {
         var kind = entry?.Kind ?? AppearanceKind.Outfit;
-        if (HasRegistered(kind) || s_preloadParts.Count > 0 || s_loadId != null)
+        if ((!allowReplace && HasRegistered(kind)) || s_preloadParts.Count > 0 || s_loadId != null)
             throw new InvalidOperationException("Clear previous probe before loading an outfit");
+        s_outfitAllowReplace = allowReplace;
         try {
             var requested = entry?.Parts ?? new List<AppearancePart> {
                 new AppearancePart(0, "mods/owots_appearance_lab/manba_4/body_catalog.user", "mods/owots_appearance_lab/manba_4/body_____________________.pfb"),
                 new AppearancePart(2, "mods/owots_appearance_lab/manba_4/head_catalog.user", "mods/owots_appearance_lab/manba_4/head_____________________.pfb"),
                 new AppearancePart(3, "mods/owots_appearance_lab/manba_4/hair_catalog.user", "mods/owots_appearance_lab/manba_4/hair_____________________.pfb") };
+            var provided = new HashSet<int>();
             foreach (var part in requested) {
+                // Built-in entry: empty catalog means "engine prefab by model ID".
+                if (string.IsNullOrEmpty(part.Catalog) && int.TryParse(part.Prefab, out int builtInId)) {
+                    AddNativePart(part.Part, builtInId, slot, provided, T("该内置条目缺少对应资产（可能是未拥有的 DLC），已拒绝穿戴", "This built-in entry is missing its asset (possibly an unowned DLC); wear refused"));
+                    continue;
+                }
                 var owner = API.GetResourceManager().CreateUserData("app.user_data.PlayerPartsList", part.Catalog);
                 if (!Alive(owner)) throw new InvalidOperationException("Cannot load " + part.Catalog);
                 s_preloadParts.Add(new OutfitPart { Part = part.Part, Id = 900001 + slot * 32 + part.Part,
                     ExpectedPrefab = part.Prefab, ExpectedCatalog = part.Catalog, Owner = owner.Globalize() });
+                provided.Add(part.Part);
+            }
+            // Atomic mode only rebuilds parts whose model ID changes, so an engine-owned
+            // cloak/hair would keep its cloth/secondary bindings from the previous body.
+            // Pull those engine prefabs into the same change instead.
+            if (companions != null) {
+                var manager = Manager();
+                var info = manager.getControllingPlayerInfo();
+                var context = Alive(info) ? info.Context : null;
+                var player = Alive(context) ? context.Player : null;
+                foreach (var partType in companions) {
+                    if (provided.Contains(partType) || !Alive(player)) continue;
+                    int nativeId = app.PlayerManager.getCurrentEquipID((app.PlayerPartsDef.PARTS_TYPE)partType, player);
+                    AddNativePart(partType, nativeId, slot, provided, null);
+                }
             }
             s_pendingModId = entry?.Id;
             s_pendingKind = kind;
@@ -2930,7 +3720,7 @@ public static class OWOTSAppearanceLab {
         try {
             bool ready = true;
             foreach (var part in s_preloadParts) {
-                if (!Alive(part.Prefab)) {
+                if (!Alive(part.Prefab) && part.Owner != null) {
                     var data = part.Owner.As<app.user_data.PlayerPartsList>();
                     for (int i = 0; i < Math.Min(data.DataNum, 128); i++) {
                         var prefab = data._DataList[i].PartsPrefab;
@@ -2941,7 +3731,9 @@ public static class OWOTSAppearanceLab {
                         }
                     }
                 }
-                ready &= Alive(part.Prefab) && part.Prefab.Ready && part.Prefab.Valid;
+                // Engine-owned prefabs are already resident; requiring Ready/Valid on
+                // them made the atomic switch time out and reject every apply.
+                ready &= part.Native || (Alive(part.Prefab) && part.Prefab.Ready && part.Prefab.Valid);
             }
             if (!ready) {
                 if (Environment.TickCount64 < s_outfitDeadline) return;
@@ -2955,6 +3747,16 @@ public static class OWOTSAppearanceLab {
                 throw new InvalidOperationException("Player model unavailable or busy");
             if (s_selectedParts.Count > 0 && ((IProxyable)supporter).GetAddress() != s_visualSupporter)
                 throw new InvalidOperationException("Player changed; clear existing appearance before selecting another group");
+            if (s_outfitAllowReplace) {
+                // Atomic switch: withdraw and select inside the same game-thread call so
+                // the native equip lookup never observes a native frame between MODs.
+                WithdrawSelection(null);
+                s_activeMods.Remove(AppearanceKind.Outfit);
+                s_activeMods.Remove(AppearanceKind.Weapon);
+                s_retiringParts.AddRange(s_outfitParts);
+                s_outfitParts.Clear();
+            }
+            s_outfitAllowReplace = false;
             foreach (var part in s_preloadParts)
                 if (manager.Catalog.getPlayerPartsList((app.PlayerPartsDef.PARTS_TYPE)part.Part).ContainsKey(part.Id) ||
                     manager.Catalog.getPlayerPartsListHQ((app.PlayerPartsDef.PARTS_TYPE)part.Part).ContainsKey(part.Id))
@@ -2994,14 +3796,18 @@ public static class OWOTSAppearanceLab {
             s_visualBodyId = selection.TryGetValue(0, out int bodyId) ? bodyId : -1;
             s_selectedParts = selection;
             s_activeModId = s_pendingModId;
-            if (s_pendingModId != null) s_activeMods[s_pendingKind] = s_pendingModId;
+            // The four-category flow passes synthetic "runtime.wardrobe.*" apply entries
+            // here; only real author ids may enter the legacy outfit/weapon projection.
+            if (SanitizeLegacyId(s_pendingModId) != null) s_activeMods[s_pendingKind] = s_pendingModId;
             s_outfitParts.AddRange(s_preloadParts);
             s_preloadParts.Clear();
             s_outfitRequest = null;
             Respond(id, true, new { phase = "finished", modId = s_activeModId, selectedParts = selection, equipped = Equipped(manager) });
         } catch (Exception e) {
             s_outfitRequest = null;
+            s_outfitAllowReplace = false;
             ReleasePreload();
+            try { ReleaseRetiringParts(null); } catch { }
             Respond(id, false, new { error = e.Message });
         }
     }
@@ -3010,7 +3816,8 @@ public static class OWOTSAppearanceLab {
         foreach (var part in parts) {
             if (part.Registered) { part.RemoveNormal(); part.Registered = false; }
             if (part.RegisteredHQ) { part.RemoveHQ(); part.RegisteredHQ = false; }
-            if (Alive(part.Prefab)) part.Prefab.Standby = false;
+            // Never clear Standby on an engine-owned companion prefab.
+            if (!part.Native && Alive(part.Prefab)) part.Prefab.Standby = false;
             part.Owner?.Release();
             part.Owner = null;
             part.NormalCatalogOwner?.Release();
@@ -3025,6 +3832,25 @@ public static class OWOTSAppearanceLab {
     static void ReleasePreload() {
         ReleaseParts(s_preloadParts);
         s_pendingModId = null;
+    }
+
+    // Previous-MOD parts survive until the native model IDs have moved off them, so a
+    // MOD switch never shows an intermediate native frame.
+    static void ReleaseRetiringParts(app.cPlayerGameObjectSupporter supporter) {
+        if (s_retiringParts.Count == 0) return;
+        s_retiringParts.RemoveAll(part => s_selectedParts.Values.Contains(part.Id));
+        if (s_retiringParts.Count == 0) return;
+        if (supporter == null) {
+            try {
+                var info = Manager().getControllingPlayerInfo();
+                var entity = Alive(info) ? info.CharacterEntity : null;
+                supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            } catch { return; }
+        }
+        if (!UsableSupporter(supporter) || supporter.isChangeModelProcessing()) return;
+        foreach (var part in s_retiringParts)
+            if (supporter._ModelIDs[part.Part] == part.Id) return; // still referenced by the native model
+        ReleaseParts(s_retiringParts);
     }
 
     static void ReleaseOutfit(AppearanceKind? kind = null) {

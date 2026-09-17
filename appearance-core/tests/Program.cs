@@ -145,6 +145,18 @@ try
     Require(WardrobePreferences.Read(preferencePath) == preferences, "Invalid preferences destroyed the last valid file");
     try { new WardrobePreferences(AutomaticRestore: true).Validate(); throw new Exception("Restore enabled without persistence"); }
     catch (FormatException) { }
+    Require(new WardrobePreferences().UiCharacterSync, "Menu-character sync must default to enabled");
+    Require(new WardrobePreferences(UiCharacterSync: false).Validate().UiCharacterSync == false, "Menu-character sync opt-out was not preserved");
+    Require(new WardrobePreferences().AtomicSwitch, "Flicker-free switch must default to enabled");
+    Require(new WardrobePreferences().UiLanguage == "auto", "Interface language must default to auto");
+    Require(new WardrobePreferences(UiLanguage: "en").Validate().UiLanguage == "en", "Forced interface language was not preserved");
+    try { new WardrobePreferences(UiLanguage: "fr").Validate(); throw new Exception("Unsupported interface language accepted"); }
+    catch (FormatException) { }
+    // Older preference files have no UiCharacterSync member; they must adopt the enabled default.
+    File.WriteAllText(preferencePath,
+        "{\"SchemaVersion\":1,\"Hotkey\":\"Slash\",\"Cards\":true,\"Persistence\":true,\"AutomaticRestore\":true}");
+    Require(WardrobePreferences.Read(preferencePath).UiCharacterSync, "Legacy preferences did not adopt the menu-character default");
+    preferences.Write(preferencePath);
     File.WriteAllText(preferencePath, "{");
     try { WardrobePreferences.Read(preferencePath); throw new Exception("Corrupt preferences silently accepted"); }
     catch (JsonException) { }

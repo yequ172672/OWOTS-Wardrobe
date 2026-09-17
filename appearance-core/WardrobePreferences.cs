@@ -5,13 +5,18 @@ using System.Text.Json;
 namespace OWOTS.Appearance;
 
 public sealed record WardrobePreferences(int SchemaVersion = 1, string Hotkey = "Slash", bool Cards = false,
-    bool Persistence = false, bool AutomaticRestore = false, bool NativeMenuSync = false, bool IndependentSkeleton = true)
+    bool Persistence = false, bool AutomaticRestore = false, bool NativeMenuSync = false, bool IndependentSkeleton = true,
+    bool UiCharacterSync = true, bool AtomicSwitch = true, string UiLanguage = "auto")
 {
     public static readonly string[] SupportedHotkeys = { "Slash", "F6", "F7", "F8", "F9", "F10", "F11", "F12" };
+    // "auto" follows the operating-system UI language; "zh"/"en" force one interface language.
+    public static readonly string[] SupportedLanguages = { "auto", "zh", "en" };
     public WardrobePreferences Validate()
     {
         if (SchemaVersion != 1 || Array.IndexOf(SupportedHotkeys, Hotkey) < 0)
             throw new FormatException("Unsupported wardrobe preferences version or hotkey");
+        if (Array.IndexOf(SupportedLanguages, UiLanguage) < 0)
+            throw new FormatException("Unsupported interface language");
         if (AutomaticRestore && !Persistence)
             throw new FormatException("Automatic restoration requires appearance persistence");
         return this;

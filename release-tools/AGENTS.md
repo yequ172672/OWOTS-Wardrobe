@@ -22,6 +22,7 @@
 ## For AI Agents
 - Package outputs belong under workspace `_validation/releases`; never copy arbitrary game directory contents.
 - Do not ship generated game SDK assemblies, private MODs, saves, game resources, or logs. First-run SDK generation happens locally on the tester's machine.
+- Exception (user decision 2026-09-17): `reframework/data/owots_appearance_lab/builtin-icons/*.png` are extracted native costume thumbnails shipped as a built-in MOD resource set for the wardrobe's built-in entries. `Build-OWOTSAppearanceRelease.ps1` collects them from `OWOTS-Wardrobe/reframework/builtin-icons/`. The provenance and redistribution caveat must stay documented in `THIRD-PARTY-NOTICES.md`.
 - Every changed install must have a transaction record, even a fresh installation with no originals. Preserve pre-existing identical files on uninstall.
 - The runtime release no longer ships the wardrobe skeleton Lua (retired 2026-09-16; the independent skeleton is built into the plugin). It still ships the inert `yorha_2b_skeleton_adapter.lua` retirement marker at its original autorun path. Use normal backup/rollback records for both; installation requires a closed game and full restart, never a live script reset. Skeleton-equipped MOD resources remain in separate converted packages.
 - Validate backup bytes before uninstall writes; preserve post-install user modifications. Reject target reparse points, duplicate install paths and path escapes.
