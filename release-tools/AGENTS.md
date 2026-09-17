@@ -21,6 +21,7 @@
 
 ## For AI Agents
 - Package outputs belong under workspace `_validation/releases`; never copy arbitrary game directory contents.
+- The player package intentionally contains no `tools/` or `docs/` folders: only `dinput8.dll`, `reframework/**`, `README.md`, `README-zh-CN.md`, `LICENSE`, `THIRD-PARTY-NOTICES.md` and the bundled third-party license texts. `Install-`/`Uninstall-`/`Verify-OWOTSAppearance.ps1` and all `docs/` material stay in the repository as developer/tester tooling and are not shipped. Installation is a plain extract-merge into the game root.
 - Do not ship generated game SDK assemblies, private MODs, saves, game resources, or logs. First-run SDK generation happens locally on the tester's machine.
 - Exception (user decision 2026-09-17): `reframework/data/owots_appearance_lab/builtin-icons/*.png` are extracted native costume thumbnails shipped as a built-in MOD resource set for the wardrobe's built-in entries. `Build-OWOTSAppearanceRelease.ps1` collects them from `OWOTS-Wardrobe/reframework/builtin-icons/`. The provenance and redistribution caveat must stay documented in `THIRD-PARTY-NOTICES.md`.
 - Every changed install must have a transaction record, even a fresh installation with no originals. Preserve pre-existing identical files on uninstall.

@@ -37,30 +37,18 @@
 
 ## 安装
 
+发行包就是游戏目录的一个子集，**直接解压合并即可，不需要运行任何脚本**。
+
 1. 退出游戏，并关闭会占用游戏目录文件的工具。
-2. 将发行包完整解压到任意位置。
-3. 使用 Windows PowerShell 5.1 或 PowerShell 7 执行：
-
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\tools\Install-OWOTSAppearance.ps1 -GameDirectory "D:\你的游戏目录" -Force
-   ```
-
-   `-Force` 会先把要替换的文件备份到游戏目录下的 `.owots-appearance-backups`，不会覆盖其他插件、Lua 或配置。
+2. **先备份**游戏根目录的 `dinput8.dll`（以及你原有、不想被覆盖的 `reframework/` 内容）。
+3. 把发行包解压到游戏根目录，遇到同名文件选择覆盖。
 4. 确认已安装 **.NET 10 x64 Runtime** 与 **VC++ 2015–2022 x64 Redistributable**。
 5. 启动游戏。首次启动会由本机生成与当前游戏版本对应的 SDK，请耐心等待。
 6. 进入可操作场景后，按 `/`（问号键所在物理按键）打开「外观衣橱」。
 
-卸载：
+卸载：删除发行包带来的文件即可（主要是 `reframework/plugins/source/OWOTSAppearanceLab.cs`、`reframework/data/owots_appearance_lab/`、`reframework/plugins/managed/` 与内置图标目录），并恢复备份的 `dinput8.dll`。
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\tools\Uninstall-OWOTSAppearance.ps1 -GameDirectory "D:\你的游戏目录"
-```
-
-### 手动安装（不用脚本）
-
-安装脚本只是"省事 + 可回滚"，不是必须。发行包目录结构与游戏目录一致（根目录含 `dinput8.dll`，以及 `reframework/`、`docs/`、`tools/`），所以**直接把压缩包解压到游戏根目录并覆盖同名文件**即可完成安装。使用脚本的唯一好处是：安装前自动备份被覆盖的文件、安装后可按哈希校验、并可一键回滚。手动安装时请自行先备份 `dinput8.dll` 与你原有的 `reframework/` 内容。
+> 安装 / 卸载 / 校验脚本（`Install-OWOTSAppearance.ps1` 等）只放在 GitHub 仓库的 `release-tools/`，供开发者与测试者使用，**不随用户包分发**。用户包内只有运行时文件、双语文档与许可证声明。
 
 ## 使用
 

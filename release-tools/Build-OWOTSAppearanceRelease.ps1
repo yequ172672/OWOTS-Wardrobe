@@ -137,28 +137,22 @@ foreach ($scriptName in @('yorha_2b_skeleton_adapter.lua')) {
     $scriptRelative = 'reframework/autorun/' + $scriptName
     Copy-Payload (Join-Path $repoRoot $scriptRelative) $scriptRelative $scriptRelative $payload
 }
-Copy-Payload (Join-Path $repoRoot 'docs\OWOTS_INDEPENDENT_SKELETON.md') 'docs/OWOTS_INDEPENDENT_SKELETON.md' $null $payload
-
-$readme = Join-Path $PSScriptRoot 'README-zh-CN.md'
+# Player package contents: only the runtime files, the bilingual README, the project
+# license and the required third-party notices/sub-licenses. The installer/verify
+# scripts and the developer documents stay in the repository and are NOT shipped.
 $notice = Join-Path $PSScriptRoot 'THIRD-PARTY-NOTICES.md'
-$appearanceLicense = Join-Path $PSScriptRoot 'LICENSE-OWOTS-Appearance.txt'
 $hexaLicense = Join-Path $PSScriptRoot 'LICENSE-Hexa.NET.txt'
 $roslynLicense = Join-Path $PSScriptRoot 'LICENSE-Microsoft-CodeAnalysis.txt'
-Ensure-File $readme '中文说明'
 Ensure-File $notice '第三方说明'
-Ensure-File $appearanceLicense '衣橱许可证说明'
 Ensure-File $hexaLicense 'Hexa.NET 许可证'
 Ensure-File $roslynLicense 'Roslyn 许可证'
-Copy-Payload $readme 'README-zh-CN.md' $null $payload
-Copy-Payload $notice 'docs/THIRD-PARTY-NOTICES.md' $null $payload
-Copy-Payload $appearanceLicense 'docs/LICENSE-OWOTS-Appearance.txt' $null $payload
-Copy-Payload $hexaLicense 'docs/LICENSE-Hexa.NET.txt' $null $payload
-Copy-Payload $roslynLicense 'docs/LICENSE-Microsoft-CodeAnalysis.txt' $null $payload
-Copy-Payload (Join-Path $repoRoot 'LICENSE') 'docs/LICENSE-OWOTS-Wardrobe.txt' $null $payload
-Copy-Payload (Join-Path $workspaceRoot 'REFramework-cn\LICENSE') 'docs/LICENSE-REFramework.txt' $null $payload
-Copy-Payload (Join-Path $PSScriptRoot 'Install-OWOTSAppearance.ps1') 'tools/Install-OWOTSAppearance.ps1' $null $payload
-Copy-Payload (Join-Path $PSScriptRoot 'Uninstall-OWOTSAppearance.ps1') 'tools/Uninstall-OWOTSAppearance.ps1' $null $payload
-Copy-Payload (Join-Path $PSScriptRoot 'Verify-OWOTSAppearance.ps1') 'tools/Verify-OWOTSAppearance.ps1' $null $payload
+Copy-Payload (Join-Path $repoRoot 'README.md') 'README.md' $null $payload
+Copy-Payload (Join-Path $repoRoot 'README-zh-CN.md') 'README-zh-CN.md' $null $payload
+Copy-Payload (Join-Path $repoRoot 'LICENSE') 'LICENSE' $null $payload
+Copy-Payload $notice 'THIRD-PARTY-NOTICES.md' $null $payload
+Copy-Payload $hexaLicense 'LICENSE-Hexa.NET.txt' $null $payload
+Copy-Payload $roslynLicense 'LICENSE-Microsoft-CodeAnalysis.txt' $null $payload
+Copy-Payload (Join-Path $workspaceRoot 'REFramework-cn\LICENSE') 'LICENSE-REFramework.txt' $null $payload
 
 $nativeCommit = (& git -C (Join-Path $workspaceRoot 'REFramework-cn') rev-parse HEAD).Trim()
 $managedCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
@@ -172,7 +166,7 @@ $manifest = [pscustomobject]@{
     source = [pscustomobject]@{
         nativeRepository = 'https://github.com/yequ172672/REFramework-cn'
         nativeCommit = $nativeCommit
-        managedRepository = 'https://github.com/yequ172672/re-engine-mcp-CN'
+        managedRepository = 'https://github.com/yequ172672/OWOTS-Wardrobe'
         managedCommit = $managedCommit
         nativeDirtyFiles = $nativeDirtyFiles
         managedDirtyFiles = $managedDirtyFiles

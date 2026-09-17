@@ -1,3 +1,5 @@
-The OWOTS appearance integration and its generated single-source plugin are distributed under the GNU General Public License v3.0 (GPL-3.0).
+Repository-side note (this file is NOT shipped in the player package).
 
-See `docs/LICENSE-OWOTS-Wardrobe.txt` for the complete license text and the repository/source commit recorded in `release-manifest.json`.
+The OWOTS appearance integration and its generated single-source plugin are distributed under the GNU General Public License v3.0 (GPL-3.0). The player package ships the full text as `LICENSE` at the package root, together with `THIRD-PARTY-NOTICES.md` and the bundled third-party license texts.
+
+See the repository `LICENSE` for the complete license text; the source commit is recorded in `release-manifest.json`.

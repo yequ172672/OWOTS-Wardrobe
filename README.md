@@ -37,30 +37,18 @@ A **multi-MOD outfit / weapon appearance** system for *Onimusha: Way of the Swor
 
 ## Installation
 
+The package is a subset of the game directory, so **extracting it is the whole install — no script required**.
+
 1. Close the game and any tool holding files in the game directory.
-2. Extract the release package anywhere.
-3. Run in Windows PowerShell 5.1 or PowerShell 7:
-
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\tools\Install-OWOTSAppearance.ps1 -GameDirectory "D:\YourGameDir" -Force
-   ```
-
-   `-Force` backs up every file it replaces under `.owots-appearance-backups` in the game directory and never touches other plugins, Lua scripts or configuration.
+2. **Back up first**: the game-root `dinput8.dll` (and any `reframework/` content you do not want overwritten).
+3. Extract the package into the game root and overwrite when prompted.
 4. Make sure **.NET 10 x64 Runtime** and the **VC++ 2015–2022 x64 Redistributable** are installed.
 5. Launch the game. The first launch generates the SDK for your exact game build locally; this can take a while.
 6. Once you are in a playable scene, press `/` (the physical key of `?`) to open the Wardrobe.
 
-Uninstall:
+Uninstall: remove the files the package added (mainly `reframework/plugins/source/OWOTSAppearanceLab.cs`, `reframework/data/owots_appearance_lab/`, `reframework/plugins/managed/` and the built-in icon folder) and restore your backup of `dinput8.dll`.
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\tools\Uninstall-OWOTSAppearance.ps1 -GameDirectory "D:\YourGameDir"
-```
-
-### Manual install (no script)
-
-The script is a convenience, not a requirement. The package mirrors the game directory (root `dinput8.dll` plus `reframework/`, `docs/`, `tools/`), so **extracting the archive into the game root and overwriting the same names is a complete install**. The script only adds automatic backups, hash verification and one-step rollback. If you install manually, back up `dinput8.dll` and your existing `reframework/` content first.
+> The install/uninstall/verify scripts (`Install-OWOTSAppearance.ps1` and friends) live in the repository under `release-tools/` for developers and testers and are **not shipped in the player package**, which contains only the runtime files, the bilingual docs and the license notices.
 
 ## Usage
 
