@@ -14,8 +14,8 @@ import subprocess
 import sys
 import zipfile
 
-RELEASE_VERSION = '0.1.0-skeleton-test'
-RELEASE_DATE = '20260916'
+RELEASE_VERSION = '2026.09.17'
+RELEASE_DATE = '20260917'
 
 
 def digest(path):
