@@ -73,6 +73,36 @@ and test extracts remain outside it.
 * `--parts-plan` selects an explicit coherent set of parts within one category.
   Apply the same catalog-role and actual-row checks to every planned root;
   reject duplicate parts, mixed categories and conflicting single-root flags.
+* `inspect` reports `stats.nativePartCandidates` so a front end can offer an
+  explicit picker, preferring the `normal` variant and keeping the alternate
+  (HQ) count per part; `NATIVE_PART_CANDIDATE_AMBIGUOUS` warns during inspect
+  when one part genuinely has several variants. `convert` still selects from
+  that same index (`_native_index_records`/`_source_part_stems`/
+  `_native_index_matches` are the shared, cached matchers).
+* `--prune-unreachable` is the explicit "publish only what the selected parts
+  reach" opt-in. Every excluded input becomes a reported
+  `PRUNED_UNREACHABLE_RESOURCE` carrying a verifiable reason: byte-identical to
+  a published resource (`sameContentAs`), a native part from the bundled index,
+  an unreachable standalone rig with its mesh-embedded-rest fallback, or an
+  explicit "no reachable owner". The default stays fail-closed, and dynamic
+  Lua/DLL files are still governed by `--experimental-static-only`.
+* A `body` entry derives `rules.hideParts` from the bundled
+  `runtime/owots_body_rules.json` (`IsVisibleCloak`, `IsInvisibleHead`) for the
+  selected BODY native id; a part the entry publishes is never hidden. The
+  report records the derivation and `--no-body-rule-hides` restores the old
+  behaviour. `UNCONSUMED_MOD_RESOURCE` details must stay classified
+  (`sameContentAs` / `nativePart` / `no reachable owner`), never the legacy
+  "add a part or choose a variant" wording.
+* AppearanceRsz failures are classified by `AppearanceWorker.failure_code` into
+  `RSZ_TEMPLATE_LAYOUT_MISMATCH` and `RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED` (each
+  naming its documented next step) or the generic `CONVERSION_BLOCKED`;
+  `ConversionError.code` is what `run()` writes into the report. Never encode an
+  actionable cause only in a raw stderr tail.
+* The GUI stays a thin front end over the CLI: a parts plan travels as a temp
+  JSON file (`--parts-plan`), hidden parts as repeated `--hide-part`, and `_args`
+  captures every Tk value on the UI thread. `gui_self_test()` is the release
+  gate and must exercise every new control, including releasing widget
+  references when a `Toplevel` closes.
 * Do not copy Lua/DLL/plugin behavior into a static wardrobe package. Record
   the limitation in `conversion-report.json` instead.
 * Special scripted MODs use separate manual adapters outside this directory.

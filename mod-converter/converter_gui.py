@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import queue
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -63,13 +64,27 @@ def T(zh: str, en: str) -> str:
 AUTO = T("自动", "Auto")
 
 
+def report_json(text: str) -> dict[str, object] | None:
+    """Recover the machine-readable report from mixed stdout/stderr output.
+
+    A blocked run writes its report to stderr after the worker's own log lines,
+    and the GUI merges both streams, so the JSON is not always at offset zero.
+    """
+    start = text.find("{")
+    while start != -1:
+        try:
+            value = json.loads(text[start:])
+        except (ValueError, TypeError):
+            start = text.find("{", start + 1)
+            continue
+        return value if isinstance(value, dict) else None
+    return None
+
+
 def readable_report(output: str) -> str:
     """Put actionable results before the many per-resource inventory records."""
-    try:
-        value = json.loads(output)
-    except (ValueError, TypeError):
-        return output
-    if not isinstance(value, dict):
+    value = report_json(output)
+    if value is None:
         return output
     status = value.get("status", "unknown")
     labels = {"converted": T("转换完成", "Conversion completed"),
@@ -91,6 +106,28 @@ def readable_report(output: str) -> str:
     parts = stats.get("autoPartDependencyChecks", {})
     if parts:
         lines.append(T("已验证部位：", "Verified parts: ") + T("、", ", ").join(sorted(parts)))
+    for issue in value.get("issues", []):
+        if issue.get("code") == "MANIFEST_HIDE_PARTS_FROM_BODY_RULES":
+            details = issue.get("details", {})
+            derived = details.get("derived") or []
+            hidden = T("、", ", ").join(derived) if derived else T("无", "none")
+            lines.append(T("按原生体型可见性规则隐藏：", "Hidden by the native body visibility rules: ")
+                         + str(hidden) + f"  (bodyId={details.get('bodyId')})")
+            skipped = details.get("suppliedPartsNotHidden") or []
+            if skipped:
+                lines.append("  " + T("本条目已提供，故不隐藏：", "Provided by this entry, so not hidden: ")
+                             + T("、", ", ").join(skipped))
+    candidates = stats.get("nativePartCandidates", [])
+    if candidates:
+        lines += ["", T("原生部位候选（可用高级选项里的“部位计划”精确选择，不要合并变体）：",
+                        "Native part candidates (select precisely with the advanced parts plan; never merge variants):")]
+        for entry in candidates:
+            for row in entry.get("candidates", []):
+                lines.append(f"  {entry.get('part', '')}  nativeId={row.get('nativeId')}  "
+                             f"{row.get('variant', '')}  {row.get('prefab', '')}")
+    pruned = stats.get("prunedModResources", [])
+    if pruned:
+        lines.append(T("已按“排除不可达资源”排除：", "Excluded by prune-unreachable: ") + str(len(pruned)))
     for item in stats.get("texturePromotions", []):
         if item.get("promoted"):
             dimensions = item.get("streamingResolution", [])
@@ -148,8 +185,22 @@ class ConverterWindow:
         self.part = tk.StringVar(value=AUTO)
         self.allow_crc = tk.BooleanVar(value=False)
         self.static_only = tk.BooleanVar(value=False)
+        self.prune_unreachable = tk.BooleanVar(value=False)
+        self.body_rule_hides = tk.BooleanVar(value=True)
         self.advanced_visible = False
         self.advanced_window: tk.Toplevel | None = None
+        # Explicit parts plan (BODY + HEAD + HAIR in one entry) and declared
+        # hidden parts; both are needed far more often than the CLI implies.
+        self.plan_rows: list[dict[str, str]] = []
+        self.plan_window: tk.Toplevel | None = None
+        self.plan_tree: ttk.Treeview | None = None
+        self.plan_summary: tk.Label | None = None
+        self.hide_list: tk.Listbox | None = None
+        self.hide_parts: list[str] = []
+        self.plan_files: list[str] = []
+        self.last_report: dict[str, object] | None = None
+        self.last_output: str = ""
+        self.open_output_button: ttk.Button | None = None
         self._build()
         self.root.after(100, self._drain)
 
@@ -185,6 +236,9 @@ class ConverterWindow:
         self.inspect_button.pack(side="left", padx=(0, 8), ipadx=12, ipady=4)
         self.convert_button = ttk.Button(actions, text=T("开始转换", "Start conversion"), command=self.convert)
         self.convert_button.pack(side="left", ipadx=12, ipady=4)
+        self.open_output_button = ttk.Button(actions, text=T("打开输出目录", "Open output folder"),
+                                             command=self._open_output, state="disabled")
+        self.open_output_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=4)
         self.status = tk.Label(actions, text=T("状态：等待输入", "Status: waiting for input"), anchor="e", bg=self.BG, fg=self.MUTED)
         self.status.pack(side="right", fill="x", expand=True)
 
@@ -199,47 +253,244 @@ class ConverterWindow:
         scrollbar.pack(side="right", fill="y")
         self.root.bind("<Return>", lambda _event: self.convert() if not self.busy else None)
 
+    def _release_advanced_widgets(self) -> None:
+        """Drop references to widgets owned by the destroyed advanced window."""
+        self.plan_summary = None
+        self.hide_list = None
+
     def _toggle_advanced(self) -> None:
         if self.advanced_window is not None and self.advanced_window.winfo_exists():
             self.advanced_window.destroy()
             self.advanced_window = None
             self.advanced_visible = False
+            self._release_advanced_widgets()
             self.advanced_toggle.configure(text=T("显示高级选项 ▸", "Show advanced options ▸"))
             return
         window = self.advanced_window = tk.Toplevel(self.root)
         self.advanced_visible = True
         window.title(T("OWOTS 衣橱转换器 · 高级选项", "OWOTS Wardrobe Converter · Advanced"))
-        window.geometry("720x410")
-        window.minsize(640, 360)
+        window.geometry("760x600")
+        window.minsize(660, 520)
         window.configure(bg=self.BG)
         window.transient(self.root)
         options = ttk.LabelFrame(window, text=T("高级衣橱配置", "Advanced wardrobe configuration"), padding=12)
         options.pack(fill="both", expand=True, padx=12, pady=12)
-        self._labeled_combo(options, 0, T("部位（可选）", "Part (optional)"), self.part,
+        plan_frame = ttk.LabelFrame(options, text=T("部位计划（可选，多部位条目用）", "Parts plan (optional, for multi-part entries)"), padding=8)
+        plan_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.plan_summary = tk.Label(plan_frame, anchor="w", bg=self.PANEL, fg=self.MUTED)
+        self.plan_summary.pack(side="left", fill="x", expand=True)
+        ttk.Button(plan_frame, text=T("编辑部位计划…", "Edit parts plan…"),
+                   command=self._open_plan_window).pack(side="right")
+        self._labeled_combo(options, 1, T("部位（可选）", "Part (optional)"), self.part,
                             (AUTO, "BODY", "BODY_SUB", "HEAD", "HAIR", "CLOAK", "GAUNTLET",
                              "WEAPON", "SHEATH", "WEAPON_SUB", "SHEATH_SUB", "BOW"), 28)
-        self._text_row(options, 1, "MOD ID", "id", T("例如 scarlet.hat；留空自动生成", "e.g. scarlet.hat; blank auto-generates"))
-        self._text_row(options, 2, T("原始 PFB", "Source PFB"), "prefab", T("mesh MOD 没有 PFB 时填写逻辑路径", "Logical path when a mesh MOD has no PFB"))
-        self._text_row(options, 3, T("原始 catalog", "Source catalog"), "catalog", T("PlayerPartsList USER 逻辑路径", "PlayerPartsList USER logical path"))
-        self._text_row(options, 4, T("原生 ID", "Native ID"), "native", T("目录多行时用于精确选择", "Used to pick the exact row when the catalog has several"))
+        self._text_row(options, 2, "MOD ID", "id", T("例如 scarlet.hat；留空自动生成", "e.g. scarlet.hat; blank auto-generates"))
+        self._text_row(options, 3, T("原始 PFB", "Source PFB"), "prefab", T("mesh MOD 没有 PFB 时填写逻辑路径", "Logical path when a mesh MOD has no PFB"))
+        self._text_row(options, 4, T("原始 catalog", "Source catalog"), "catalog", T("PlayerPartsList USER 逻辑路径", "PlayerPartsList USER logical path"))
+        self._text_row(options, 5, T("原生 ID", "Native ID"), "native", T("目录多行时用于精确选择", "Used to pick the exact row when the catalog has several"))
+        hide_frame = ttk.LabelFrame(options, text=T("隐藏原生部位（可选）", "Hide native parts (optional)"), padding=8)
+        hide_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.hide_list = tk.Listbox(hide_frame, selectmode="multiple", height=5, exportselection=False,
+                                    bg="#0d0f12", fg=self.TEXT, relief="flat",
+                                    selectbackground=self.ACCENT, highlightthickness=0)
+        for part_name in sorted(mod_converter.ALL_PARTS):
+            self.hide_list.insert("end", part_name)
+        self.hide_list.pack(side="left", fill="x", expand=True)
+        self.hide_list.bind("<<ListboxSelect>>", lambda _event: self._sync_hide_parts())
+        ttk.Label(hide_frame, text=T("按住 Ctrl 多选；本条目已提供的部位不会被隐藏",
+                                     "Ctrl-click to pick several; a part this entry provides is never hidden"),
+                  foreground=self.MUTED, wraplength=220, justify="left").pack(side="left", padx=(10, 0))
         check = ttk.Checkbutton(options, text=T("实验：允许已报告 CRC mismatch 的结构化资源写回（报告会标记）", "Experimental: allow structured-resource write-back reported as CRC mismatch (flagged in the report)"),
                                 variable=self.allow_crc)
-        check.grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        check.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         static_check = ttk.Checkbutton(
             options,
             text=T("实验：接受静态转换（省略 Lua/原生插件，动态行为不等价）", "Experimental: accept static conversion (Lua/native plugins omitted; dynamic behavior is not equivalent)"),
             variable=self.static_only,
         )
-        static_check.grid(row=6, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        static_check.grid(row=8, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        prune_check = ttk.Checkbutton(
+            options,
+            text=T("只发布所选部位可达的资源；其余逐条记录原因后排除（不可达独立骨架会让体型回退到 BODY mesh 内嵌休止）",
+                   "Publish only resources reachable from the selected parts; itemise and exclude the rest (an unreachable rig falls back to the BODY mesh embedded rest)"),
+            variable=self.prune_unreachable,
+        )
+        prune_check.grid(row=9, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        body_rule_check = ttk.Checkbutton(
+            options,
+            text=T("按原生体型可见性规则自动写入隐藏部位（例如披风不可见的体型自动隐藏 CLOAK）",
+                   "Derive hidden parts from the native body visibility rules (e.g. a cloak-less body hides CLOAK)"),
+            variable=self.body_rule_hides,
+        )
+        body_rule_check.grid(row=10, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        self._refresh_plan_summary()
 
         def closed() -> None:
             self.advanced_visible = False
             self.advanced_window = None
+            self._release_advanced_widgets()
             self.advanced_toggle.configure(text=T("显示高级选项 ▸", "Show advanced options ▸"))
             window.destroy()
 
         window.protocol("WM_DELETE_WINDOW", closed)
         self.advanced_toggle.configure(text=T("关闭高级选项 ▾", "Hide advanced options ▾"))
+
+    def _sync_hide_parts(self) -> None:
+        """Keep the declared hidden parts across closing the advanced window."""
+        if self.hide_list is None or not self.hide_list.winfo_exists():
+            return
+        self.hide_parts = [self.hide_list.get(index) for index in self.hide_list.curselection()]
+
+    def _refresh_plan_summary(self) -> None:
+        label = self.plan_summary
+        if label is None or not label.winfo_exists():
+            return
+        if not self.plan_rows:
+            label.configure(text=T("未设置（使用单部位或自动识别）", "Not set (single part / auto-detect)"))
+            return
+        parts = T("、", ", ").join(str(row.get("part", "")) for row in self.plan_rows)
+        label.configure(text=T("当前计划：", "Current plan: ")
+                        + str(len(self.plan_rows)) + T(" 个部位 — ", " parts — ") + parts)
+
+    def _refresh_plan_tree(self) -> None:
+        tree = self.plan_tree
+        if tree is not None and tree.winfo_exists():
+            tree.delete(*tree.get_children())
+            for row in self.plan_rows:
+                tree.insert("", "end", values=(row.get("part", ""), row.get("nativeId", ""),
+                                               row.get("prefab", ""), row.get("catalog", "")))
+        self._refresh_plan_summary()
+
+    def _open_plan_window(self) -> None:
+        if self.plan_window is not None and self.plan_window.winfo_exists():
+            self.plan_window.lift()
+            return
+        window = self.plan_window = tk.Toplevel(self.root)
+        window.title(T("OWOTS 衣橱转换器 · 部位计划", "OWOTS Wardrobe Converter · Parts plan"))
+        window.geometry("880x440")
+        window.minsize(720, 380)
+        window.configure(bg=self.BG)
+        window.transient(self.root)
+        frame = ttk.LabelFrame(window, text=T("一个条目可同时提供同一分类的多个部位", "One entry may provide several parts of the same category"), padding=10)
+        frame.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        columns = ("part", "nativeId", "prefab", "catalog")
+        headings = {"part": T("部位", "Part"), "nativeId": "nativeId",
+                    "prefab": T("原始 PFB", "Source PFB"), "catalog": T("原始 catalog", "Source catalog")}
+        widths = {"part": 90, "nativeId": 80, "prefab": 340, "catalog": 320}
+        tree = self.plan_tree = ttk.Treeview(frame, columns=columns, show="headings", height=8, selectmode="extended")
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], anchor="w", stretch=column in {"prefab", "catalog"})
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        actions = ttk.Frame(window)
+        actions.pack(fill="x", padx=12, pady=(0, 6))
+        ttk.Button(actions, text=T("用高级选项的字段添加一行", "Add a row from the advanced fields"),
+                   command=self._plan_add_current).pack(side="left", padx=(0, 6))
+        ttk.Button(actions, text=T("从只读检查结果填入全部候选", "Fill every candidate from the last inspection"),
+                   command=self._plan_fill_from_report).pack(side="left", padx=(0, 6))
+        ttk.Button(actions, text=T("删除选中行", "Remove selected rows"),
+                   command=self._plan_remove_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(actions, text=T("清空", "Clear"), command=self._plan_clear).pack(side="left")
+        ttk.Label(window, text=T("提示：先点“只读检查”，再点“从只读检查结果填入全部候选”，然后删掉不需要的变体行。"
+                                 "同一计划只能属于一个分类，且与 PFB/catalog/原生 ID 字段互斥。",
+                                 "Tip: click Inspect first, then Fill every candidate, then remove the variants you do not want. "
+                                 "One plan must stay inside a single category and is mutually exclusive with the PFB/catalog/native-ID fields."),
+                  foreground=self.MUTED, wraplength=840, justify="left").pack(fill="x", padx=12, pady=(0, 10))
+
+        def closed() -> None:
+            self.plan_window = None
+            self.plan_tree = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", closed)
+        self._refresh_plan_tree()
+
+    def _plan_add_current(self) -> None:
+        part = self.part.get().strip()
+        prefab = self.vars["prefab"].get().strip()
+        catalog = self.vars["catalog"].get().strip()
+        if part in ("", AUTO):
+            self._set_report(T("[错误] 请先在高级选项里选择“部位”，再添加计划行。",
+                               "[Error] Choose a Part in the advanced options before adding a plan row."))
+            return
+        if not prefab or not catalog:
+            self._set_report(T("[错误] 请先填写原始 PFB 与原始 catalog，再添加计划行。",
+                               "[Error] Fill in the source PFB and catalog before adding a plan row."))
+            return
+        self.plan_rows.append({"part": part.upper(), "prefab": prefab, "catalog": catalog,
+                               "nativeId": self.vars["native"].get().strip()})
+        self._refresh_plan_tree()
+
+    def _plan_fill_from_report(self) -> None:
+        report = self.last_report if isinstance(self.last_report, dict) else {}
+        stats = report.get("stats", {}) if isinstance(report, dict) else {}
+        candidates = stats.get("nativePartCandidates", []) if isinstance(stats, dict) else []
+        if not candidates:
+            self._set_report(T("[错误] 上一次“只读检查”没有原生部位候选；请先点“只读检查”。",
+                               "[Error] The last inspection produced no native part candidates; click Inspect first."))
+            return
+        rows: list[dict[str, str]] = []
+        for entry in candidates:
+            for row in entry.get("candidates", []):
+                rows.append({"part": str(entry.get("part", "")), "prefab": str(row.get("prefab", "")),
+                             "catalog": str(row.get("catalog", "")), "nativeId": str(row.get("nativeId", ""))})
+        self.plan_rows = rows
+        self._refresh_plan_tree()
+
+    def _plan_remove_selected(self) -> None:
+        tree = self.plan_tree
+        if tree is None or not tree.winfo_exists():
+            return
+        indices = sorted((tree.index(item) for item in tree.selection()), reverse=True)
+        for index in indices:
+            if 0 <= index < len(self.plan_rows):
+                del self.plan_rows[index]
+        self._refresh_plan_tree()
+
+    def _plan_clear(self) -> None:
+        self.plan_rows = []
+        self._refresh_plan_tree()
+
+    def _plan_payload(self) -> dict[str, list[dict[str, object]]] | None:
+        rows: list[dict[str, object]] = []
+        for row in self.plan_rows:
+            part = str(row.get("part", "")).strip().upper()
+            prefab = str(row.get("prefab", "")).strip()
+            catalog = str(row.get("catalog", "")).strip()
+            if not part or not prefab or not catalog:
+                continue
+            entry: dict[str, object] = {"part": part, "prefab": prefab, "catalog": catalog}
+            native = str(row.get("nativeId", "")).strip()
+            if native:
+                entry["nativeId"] = int(native)
+            rows.append(entry)
+        return {"parts": rows} if rows else None
+
+    def _write_plan_file(self, payload: dict[str, object]) -> str:
+        """Write the plan to a private temp file the CLI can read back."""
+        for stale in self.plan_files:
+            try:
+                os.unlink(stale)
+            except OSError:
+                pass
+        self.plan_files = []
+        handle, path = tempfile.mkstemp(prefix="owots-parts-plan-", suffix=".json")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        self.plan_files.append(path)
+        return path
+
+    def _open_output(self) -> None:
+        path = self.last_output
+        if not path or not Path(path).is_dir():
+            return
+        try:
+            os.startfile(path)  # noqa: S606 - opening the folder the user chose
+        except (AttributeError, OSError) as error:
+            self._set_report(T("[错误] 无法打开输出目录：", "[Error] Could not open the output folder: ") + str(error))
 
     def _path_row(self, parent: ttk.Frame, row: int, label: str, name: str,
                   hint: str, save: bool) -> None:
@@ -313,24 +564,38 @@ class ConverterWindow:
         self.report.configure(state="disabled")
 
     def _args(self, command: str) -> argparse.Namespace:
+        self._sync_hide_parts()
         values = [command, "--input", self.vars["input"].get()]
         if command == "convert":
             values += ["--output", self.vars["output"].get()]
-            optional = (("--id", "id"), ("--prefab", "prefab"), ("--catalog", "catalog"),
-                        ("--native-id", "native"))
             selected_category = self.category.get().strip()
-            selected_part = self.part.get().strip()
             if selected_category and selected_category != AUTO:
                 values += ["--category", selected_category]
-            if selected_part and selected_part != AUTO:
-                values += ["--part", selected_part]
-            for flag, name in optional:
-                if self.vars[name].get().strip():
-                    values += [flag, self.vars[name].get().strip()]
+            if self.vars["id"].get().strip():
+                values += ["--id", self.vars["id"].get().strip()]
+            plan = self._plan_payload()
+            if plan is not None:
+                # A plan replaces the single-part fields, which the CLI rejects
+                # together with --parts-plan.
+                values += ["--parts-plan", self._write_plan_file(plan)]
+            else:
+                selected_part = self.part.get().strip()
+                if selected_part and selected_part != AUTO:
+                    values += ["--part", selected_part]
+                for flag, name in (("--prefab", "prefab"), ("--catalog", "catalog"),
+                                   ("--native-id", "native")):
+                    if self.vars[name].get().strip():
+                        values += [flag, self.vars[name].get().strip()]
+            for part in self.hide_parts:
+                values += ["--hide-part", part]
             if self.allow_crc.get():
                 values.append("--allow-crc-mismatch")
             if self.static_only.get():
                 values.append("--experimental-static-only")
+            if self.prune_unreachable.get():
+                values.append("--prune-unreachable")
+            if not self.body_rule_hides.get():
+                values.append("--no-body-rule-hides")
         if self.vars["game"].get().strip():
             values += ["--game-root", self.vars["game"].get().strip()]
         return mod_converter.make_parser().parse_args(values)
@@ -398,12 +663,23 @@ class ConverterWindow:
                 self.convert_button.configure(state="normal")
                 if kind == "done":
                     command, code, output = value  # type: ignore[misc]
-                    self._set_report(readable_report(str(output)))
+                    text = str(output)
+                    self.last_report = report_json(text)
+                    self._set_report(readable_report(text))
                     if code == 0 and command == "inspect":
+                        self.last_output = ""
+                        if self.open_output_button is not None:
+                            self.open_output_button.configure(state="disabled")
                         self.status.configure(text=T("状态：只读检查完成，未生成可安装包", "Status: inspection complete; no installable package was produced"), fg=self.OK)
                     elif code == 0:
+                        self.last_output = self.vars["output"].get().strip()
+                        if self.open_output_button is not None:
+                            self.open_output_button.configure(state="normal")
                         self.status.configure(text=T("状态：完成，可把输出目录内容合并到游戏目录", "Status: done; merge the output folder into the game directory"), fg=self.OK)
                     else:
+                        self.last_output = ""
+                        if self.open_output_button is not None:
+                            self.open_output_button.configure(state="disabled")
                         self.status.configure(text=T("状态：已阻止，请按报告修正输入", "Status: blocked; fix the input as described by the report"), fg=self.ERROR)
                 else:
                     self._set_report(T("[错误] ", "[Error] ") + str(value))
@@ -440,7 +716,54 @@ def gui_self_test() -> int:
         if selected.category != "body" or selected.part is not None:
             raise AssertionError("the selected category did not reach the CLI arguments")
         window._toggle_advanced()
+        if window.hide_list is None or window.plan_summary is None:
+            raise AssertionError("the advanced window did not build its new controls")
+        # A parts plan must reach the CLI as a plan file, never mixed with the
+        # single-part flags the CLI rejects alongside it.
+        window.part.set("BODY")
+        window.vars["prefab"].set("GameDesign/Action/Player/_Prefab/PartsList/Body/ch001_01_00.pfb")
+        window.vars["catalog"].set("gamedesign/system/catalogdata/playerbodypartslist_1st.user")
+        window.vars["native"].set("28284")
+        window._plan_fill_from_report()
+        window._plan_clear()
+        window._plan_remove_selected()
+        window._open_plan_window()
+        window._plan_add_current()
+        if not window.plan_rows:
+            raise AssertionError("adding a plan row from the advanced fields failed")
+        if window.plan_window is not None:
+            window.plan_window.destroy()
+            window.plan_window = None
+            window.plan_tree = None
+        planned = window._args("convert")
+        if getattr(planned, "parts_plan", None) is None or planned.part is not None:
+            raise AssertionError("the parts plan did not reach the CLI arguments")
+        plan_path = Path(planned.parts_plan)
+        if not plan_path.is_file():
+            raise AssertionError("the parts plan file was not written")
+        payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        if payload["parts"][0]["nativeId"] != 28284:
+            raise AssertionError("the plan row lost its native id")
+        window._plan_clear()
+        if getattr(window._args("convert"), "parts_plan", None) is not None:
+            raise AssertionError("clearing the plan did not restore single-part mode")
+        # Declared hidden parts and the new switches must reach the CLI.
+        part_names = [window.hide_list.get(index) for index in range(window.hide_list.size())]
+        window.hide_list.selection_set(part_names.index("CLOAK"))
+        window._sync_hide_parts()
+        window.prune_unreachable.set(True)
+        window.body_rule_hides.set(False)
+        flagged = window._args("convert")
+        if list(flagged.hide_parts or []) != ["CLOAK"]:
+            raise AssertionError("the declared hidden part did not reach the CLI")
+        if not flagged.prune_unreachable or flagged.body_rule_hides:
+            raise AssertionError("the new switches did not reach the CLI")
         window._toggle_advanced()
+        if window.hide_list is not None or window.plan_summary is not None:
+            raise AssertionError("closing the advanced window did not release its widgets")
+        for stale in window.plan_files:
+            os.unlink(stale)
+        window.plan_files = []
         root.destroy()
     except Exception as error:  # Build gate: report the reason instead of a traceback dialog.
         print(f"GUI self-test failed: {error}")

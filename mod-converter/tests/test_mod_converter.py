@@ -590,5 +590,127 @@ class ConverterSafetyTests(unittest.TestCase):
                     self.assertTrue(any(item.code == "UNCONSUMED_MOD_RESOURCE" for item in report.errors))
 
 
+    def _unconsumed_args(self, root: Path, **overrides) -> SimpleNamespace:
+        values = dict(worker=None, template=None, allow_unconsumed_resources=False,
+                      strict_unconsumed=False, prune_unreachable=False, input=root)
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_worker_failure_codes_are_classified(self):
+        classify = converter.AppearanceWorker.failure_code
+        self.assertEqual(classify("charCount 1008981770 too large"), "RSZ_TEMPLATE_LAYOUT_MISMATCH")
+        self.assertEqual(classify("FurParameters count 7471169 too large"), "RSZ_TEMPLATE_LAYOUT_MISMATCH")
+        self.assertEqual(classify("RszClass 1090593440 not found!"), "RSZ_TEMPLATE_LAYOUT_MISMATCH")
+        self.assertEqual(classify("Template CRC mismatch; inspect first."), "RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED")
+        self.assertEqual(classify("some unrelated crash"), "CONVERSION_BLOCKED")
+        message = converter.AppearanceWorker.failure_message("RSZ_TEMPLATE_LAYOUT_MISMATCH", "raw worker text")
+        self.assertIn("RSZ worker", message)
+        self.assertIn("raw worker text", message)
+        self.assertEqual(converter.ConversionError("boom").code, "CONVERSION_BLOCKED")
+        self.assertEqual(converter.ConversionError("boom", "TYPED_CODE").code, "TYPED_CODE")
+
+    def test_unconsumed_duplicate_reports_identical_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            kept = root / "natives/stm/art/model/body.mdf2.51"
+            extra = root / "natives/stm/art/model/body_event_00.mdf2.51"
+            kept.parent.mkdir(parents=True)
+            kept.write_bytes(b"identical-material-bytes")
+            extra.write_bytes(b"identical-material-bytes")
+            report = converter.Report("convert", root)
+            instance = converter.Converter(self._unconsumed_args(root), report)
+            instance.bundle = converter.InputBundle(root, report)
+            instance.bundle.load()
+            kept_asset = next(item for item in instance.bundle.source.assets.values()
+                              if "body.mdf2" in item.logical)
+            instance.nodes = {kept_asset.logical.casefold():
+                              converter.ResourceNode(kept_asset.logical, kept_asset, ())}
+            instance._audit_unconsumed_mod_assets()
+            issues = [issue for issue in report.errors if issue.code == "UNCONSUMED_MOD_RESOURCE"]
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues[0].details["sameContentAs"], kept_asset.logical)
+            self.assertIn("_event_00", issues[0].path)
+
+    def test_unconsumed_resource_matching_another_native_part_names_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mesh = (root / "natives/stm/art/model/character/ch0/ch001_00/10"
+                           "/ch001_00_10.mesh.260209350")
+            mesh.parent.mkdir(parents=True)
+            mesh.write_bytes(b"mesh")
+            report = converter.Report("convert", root)
+            instance = converter.Converter(self._unconsumed_args(root), report)
+            instance.bundle = converter.InputBundle(root, report)
+            instance.bundle.load()
+            instance._native_index_cache = [{
+                "part": "HEAD", "native_id": 25571, "variant": "normal",
+                "prefab": "GameDesign/Action/Player/_Prefab/PartsList/Head/ch001_00_10.pfb",
+                "catalog": "gamedesign/system/catalogdata/playerheadpartslist_1st.user",
+            }]
+            instance._audit_unconsumed_mod_assets()
+            issues = [issue for issue in report.errors if issue.code == "UNCONSUMED_MOD_RESOURCE"]
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues[0].details["nativePart"], "HEAD")
+            self.assertEqual(issues[0].details["nativeId"], 25571)
+
+    def test_prune_unreachable_itemises_instead_of_blocking(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mesh = root / "natives/stm/art/model/body.mesh.260209350"
+            mesh.parent.mkdir(parents=True)
+            mesh.write_bytes(b"mesh")
+            report = converter.Report("convert", root)
+            instance = converter.Converter(self._unconsumed_args(root, prune_unreachable=True), report)
+            instance.bundle = converter.InputBundle(root, report)
+            instance.bundle.load()
+            instance._audit_unconsumed_mod_assets()
+            self.assertFalse(report.errors)
+            self.assertTrue(any(issue.code == "PRUNED_UNREACHABLE_RESOURCE" for issue in report.issues))
+            self.assertEqual(len(report.stats["prunedModResources"]), 1)
+
+    def test_unreachable_standalone_rig_is_pruned_only_when_opted_in(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rig = root / "natives/stm/art/model/character/ch0/ch001_00/90/ch001_00_90.fbxskel.7"
+            rig.parent.mkdir(parents=True)
+            rig.write_bytes(b"unreferenced rig fixture")
+            for prune in (False, True):
+                with self.subTest(prune=prune):
+                    report = converter.Report("convert", root)
+                    instance = converter.Converter(self._unconsumed_args(root, prune_unreachable=prune), report)
+                    instance.bundle = converter.InputBundle(root, report)
+                    instance.bundle.load()
+                    instance.nodes = {}
+                    instance._prune_unreachable_actor_skeletons()
+                    self.assertEqual(bool(instance.pruned_actor_skeletons), prune)
+                    self.assertEqual(any(issue.code == "PRUNED_UNREACHABLE_RESOURCE"
+                                         for issue in report.issues), prune)
+
+    def test_body_rule_hides_follow_native_visibility_rules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = converter.Report("convert", root)
+            args = SimpleNamespace(worker=None, template=None, input=root, category="body")
+            instance = converter.Converter(args, report)
+            instance._body_rules_cache = [
+                {"BodyID": 7482, "IsVisibleCloak": True, "IsInvisibleHead": False},
+                {"BodyID": 28284, "IsVisibleCloak": False, "IsInvisibleHead": False},
+                {"BodyID": 1505, "IsVisibleCloak": True, "IsInvisibleHead": True},
+            ]
+            instance.part_roots = {"BODY": ("a.pfb", "b.user", 28284)}
+            derived, details = instance._body_rule_hide_parts()
+            self.assertEqual(derived, ["CLOAK"])
+            self.assertEqual(details["bodyId"], 28284)
+            self.assertFalse(details["isVisibleCloak"])
+            # A part the entry publishes is never hidden by the same entry.
+            instance.part_roots = {"BODY": ("a.pfb", "b.user", 1505), "HEAD": ("c.pfb", "d.user", 25571)}
+            derived, details = instance._body_rule_hide_parts()
+            self.assertEqual(derived, [])
+            self.assertEqual(details["suppliedPartsNotHidden"], ["HEAD"])
+            # An unknown body id derives nothing and must not fail.
+            instance.part_roots = {"BODY": ("a.pfb", "b.user", 999999)}
+            self.assertEqual(instance._body_rule_hide_parts(), ([], None))
+
+
 if __name__ == "__main__":
     unittest.main()

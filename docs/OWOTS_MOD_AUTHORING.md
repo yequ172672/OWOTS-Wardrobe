@@ -55,6 +55,8 @@
 - 四分类：**身体 / 披风 / 护手 / 武器**。
 - 部位名：`BODY`、`BODY_SUB`、`HEAD`、`HAIR`、`CLOAK`、`GAUNTLET`、`WEAPON`、`SHEATH`、`WEAPON_SUB`、`SHEATH_SUB`、`BOW`。
 - 你的 MOD 提供哪些部位由**资源依赖图**决定：转换器会跟随你的 PFB 图，直到触达 MOD 自己的网格/材质；不相关或未消费的输入会被报告而不是静默丢弃。
+- 一个条目可以同时提供同一分类的多个部位（例如 `BODY` + `HEAD` + `HAIR`）：用高级选项里的**“部位计划”**，
+  先点“只读检查”，再点“从只读检查结果填入全部候选”，然后删掉不需要的变体行。转换器不会替你挑变体。
 
 ### 6. 可选：独立骨架（体型）
 
@@ -72,10 +74,16 @@
 | 报告代码方向 | 含义 | 处理 |
 | --- | --- | --- |
 | 资源版本不匹配 | 文件格式版本与当前 OWOTS 读写器不符 | 提供对应版本资源，不要只改后缀 |
-| 未消费资源 | 输入里有依赖图未触达的网格/材质/纹理 | 确认是否遗漏引用，或删除多余文件 |
+| 未消费资源（`UNCONSUMED_MOD_RESOURCE`） | 报告 `details` 会说明具体原因：与已发布资源字节相同、属于未选择的其它变体、或四分类之外/无 partslist PFB 归属 | 按原因处理；确认确实不需要的多余资源，可用“排除不可达资源”让转换器逐条列明原因后排除 |
+| 已排除不可达资源（`PRUNED_UNREACHABLE_RESOURCE`） | 显式排除项，不是错误 | 核对原因与数量，确认没有漏掉你要的部位 |
+| 同一部位多个原生变体 | 例如披风可见/不可见是两套 body 变体 | 用“部位计划”只选一套，不要把变体合并成一个条目 |
+| 随包模板不匹配（`RSZ_TEMPLATE_LAYOUT_MISMATCH` / `RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED`） | 转换器的 RSZ 模板与该资源类版本不一致（不是你的 MOD 的问题） | 布局不匹配无法靠放宽校验修复；CRC 差异需要你在高级选项里显式接受实验写回 |
 | CRC mismatch | 结构化资源写回前校验不一致 | 默认拒绝；确认风险后可用“允许 CRC mismatch”实验选项 |
 | PAK 加密 / 分块目录 | 普通 MOD 转换不支持 | 用可信工具先解包为松散文件 |
 | 动态脚本 / 原生插件 | 静态衣橱包不携带 Lua/DLL 行为 | 使用“静态转换”实验选项并自行承担行为差异 |
+
+关于 `rules.hideParts`：转换器会按原生体型可见性规则自动隐藏对应部位（例如披风不可见的体型
+隐藏 `CLOAK`），报告会写明 `bodyId` 与自动隐藏项；本条目自己提供的部位不会被隐藏。
 
 ### 8. 工作原理（简述）
 
@@ -140,6 +148,9 @@ Merge the output folder into the game root using the **same structure**, then pr
 - Four categories: **Body / Cloak / Gauntlet / Weapon**.
 - Part names: `BODY`, `BODY_SUB`, `HEAD`, `HAIR`, `CLOAK`, `GAUNTLET`, `WEAPON`, `SHEATH`, `WEAPON_SUB`, `SHEATH_SUB`, `BOW`.
 - Which parts your MOD provides is decided by the **dependency graph**: the converter follows your PFB graph until it reaches MOD-owned meshes/materials; unrelated or unconsumed inputs are reported, never silently dropped.
+- One entry may provide several parts of the same category (for example `BODY` + `HEAD` + `HAIR`): use the
+  **parts plan** in the advanced options, click Inspect first, then "Fill every candidate from the last
+  inspection", and delete the variant rows you do not want. The converter never picks a variant for you.
 
 ### 6. Optional: standalone rig (body shape)
 
@@ -157,10 +168,17 @@ A failed conversion writes `conversion-report.json` and `CONVERSION-REPORT.md` (
 | Area | Meaning | Action |
 | --- | --- | --- |
 | Resource version mismatch | Format version not accepted by the current OWOTS reader | Provide the matching version; renaming the suffix is not conversion |
-| Unconsumed resources | Meshes/materials/textures not reached by the dependency graph | Check for a missing reference or remove the extra files |
+| Unconsumed resources (`UNCONSUMED_MOD_RESOURCE`) | The report `details` names the reason: byte-identical to a published resource, part of a variant you did not select, or outside the four categories / owned by no partslist PFB | Act on the reason; when the extra resources are genuinely unwanted, let the converter itemise and exclude them with the prune option |
+| Pruned unreachable resources (`PRUNED_UNREACHABLE_RESOURCE`) | Explicitly excluded, not a failure | Check the reasons and the count so no part you wanted was dropped |
+| Several native variants for one part | e.g. cloak-visible and cloak-less are two body variants | Pick one with a parts plan; never merge variants into one entry |
+| Bundled template mismatch (`RSZ_TEMPLATE_LAYOUT_MISMATCH` / `RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED`) | The converter's RSZ template does not match this resource's class version (not a defect in your MOD) | A layout mismatch cannot be fixed by relaxing checks; a CRC difference needs you to accept the experimental write-back in the advanced options |
 | CRC mismatch | Structured-resource write-back failed its checksum check | Rejected by default; opt in with the experimental CRC option if you accept the risk |
 | Encrypted / chunked PAK | Not supported for normal MOD conversion | Unpack to loose files with a trusted tool first |
 | Dynamic scripts / native plugins | A static wardrobe package does not carry Lua/DLL behavior | Use the experimental static conversion option and accept the difference |
+
+On `rules.hideParts`: the converter derives hidden parts from the native body visibility rules
+(for example a cloak-less body hides `CLOAK`) and records the `bodyId` and the derived parts in the
+report; a part the entry itself provides is never hidden.
 
 ### 8. How it works (short version)
 

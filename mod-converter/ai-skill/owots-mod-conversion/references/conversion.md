@@ -39,6 +39,19 @@
 `--parts-plan` 与单部位选择参数互斥，同一计划只能包含同一衣橱分类。
 body 可以有 BODY/HEAD/HAIR；披风、护手、武器分别是独立分类。
 
+两个常见的可选参数：
+
+- `--prune-unreachable`：只发布所选部位依赖图可达的资源，其余资源逐条写入
+  `PRUNED_UNREACHABLE_RESOURCE`（附可核对原因）后排除。整角色替换 MOD 常同时包含其它变体、
+  四分类之外的原生部位族（例如护身符 amulet/amuletsub）以及过场材质；确认真的不需要它们后
+  再启用，不要用它掩盖脚本、缺依赖或错误部位选择。
+- `--no-body-rule-hides`：默认情况下 body 条目会按随包 `runtime/owots_body_rules.json`
+  的可见性规则写入 `rules.hideParts`（例如「披风不可见」的体型自动隐藏 CLOAK）。
+  只有明确不要对齐原生行为时才关闭，并在交付说明里解释。
+
+`inspect` 的 `stats.nativePartCandidates` 已经列出每个部位的正常变体候选；GUI 的
+「部位计划」可直接把它们填入表格再删掉不需要的行，命令行等价做法是自己写 `--parts-plan`。
+
 ## 根据错误决定下一步
 
 | 报告现象 | 正确处理 |
@@ -46,12 +59,15 @@ body 可以有 BODY/HEAD/HAIR；披风、护手、武器分别是独立分类。
 | 找不到 .NET/worker | 检查当前版本依赖和工具包完整性；不要求用户安装开发 Python |
 | PAK_HASH_UNRESOLVED | 核对列表、包内清单/作者映射；只接受能验证 hash 的路径，不凭材质名命名 |
 | PAK_PROTECTED_CUSTOM | 专用加密分支；普通 EXE 不保证解密，需要独立有依据的分析或已解包来源 |
-| NATIVE_PART_AMBIGUOUS / PFB_CANDIDATE_AMBIGUOUS | 分清变体、部位与配套关系，提供显式计划；不要取第一个候选 |
+| NATIVE_PART_AMBIGUOUS / PFB_CANDIDATE_AMBIGUOUS / NATIVE_PART_CANDIDATE_AMBIGUOUS | 分清变体、部位与配套关系，提供显式计划；不要取第一个候选。`inspect` 阶段的 `NATIVE_PART_CANDIDATE_AMBIGUOUS` 只是预告，用部位计划解决 |
 | CATALOG_ROLE_MISMATCH / CATALOG_PREFAB_MISMATCH | 修正 part/catalog/PFB 对应关系，不弱化检查 |
 | GAME_ASSET_MISSING / REQUIRED_DEPENDENCY_MISSING | 核对游戏目录/更新版本/真实依赖；不自动允许未验证资源 |
 | CRC_MISMATCH | 查模板与实际布局；仅对有结构读回证据且符合用户实验范围的候选使用例外 |
-| charCount too large / worker 解析失败 | 可能是错误字段布局；改 CRC 或跳过字段不是修复 |
-| UNCONSUMED_MOD_RESOURCE | 分类解释备用变体、其他部位、缺根或不支持行为；不要静默丢资源 |
+| RSZ_TEMPLATE_LAYOUT_MISMATCH | 随包 RSZ 模板未覆盖该资源的字段布局（典型文本 `charCount ... too large`、`RszClass ... not found`）；放宽 CRC 或跳过字段都不是修复，需要更新的模板或专用适配 |
+| RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED | 写回时模板 CRC 与资源类版本不一致；这是模板差异而不是 MOD 缺陷。只有用户接受实验范围时才用 `--allow-crc-mismatch` 完成写回并核对回读；不能用来掩盖其它失败 |
+| UNCONSUMED_MOD_RESOURCE | 读 `details` 分类处理：`sameContentAs` = 与已发布资源字节相同；`nativePart`/`nativeId` = 属于未选择的其它变体（单独转换或加入计划）；两者都没有 = 四分类之外的原生部位族，或没有 partslist PFB 归属的子网格/过场变体，需要专用适配或从输入移除。不要静默丢资源 |
+| PRUNED_UNREACHABLE_RESOURCE | 已按 `--prune-unreachable` 逐条排除，既不是成功也不是失败信号；逐条核对原因，确认没有漏掉用户想要的部位 |
+| MANIFEST_HIDE_PARTS_FROM_BODY_RULES | 已按原生体型可见性写入 `hideParts`；核对 `bodyId` 与 `derived`，与用户预期不符时用 `--no-body-rule-hides` |
 | ACTOR_SKELETON_INVALID / ACTOR_SKELETON_TOPOLOGY_UNSUPPORTED / ACTOR_SKELETON_AMBIGUOUS | FBXSKEL 不是唯一可解析的 93 关节候选；修复输入或把扩展 actor 行为转入专用适配 |
 | ACTOR_SKELETON_TRANSFORM_UNSUPPORTED / ACTOR_SKELETON_TOPOLOGY_MISMATCH | 与原始 `/90` 的旋转、缩放、名称顺序或父层级不一致；v1 只允许绑定位置变化 |
 | ACTOR_SKELETON_BODY_MESH_REQUIRED / ACTOR_SKELETON_BODY_REQUIRED / ACTOR_SKELETON_BASELINE_MISSING | 只能将骨架和同一 body 条目的 MOD-owned BODY mesh 一起发布，并提供原始 `/90` 参考 |

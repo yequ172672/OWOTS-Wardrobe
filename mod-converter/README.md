@@ -9,6 +9,25 @@
 3. “游戏原始安装目录”选择 Steam 中的 `OnimushaWotS` 游戏根目录。**不需要提前解包游戏**；工具会从原始 PAK 定向读取所需依赖。
 4. 点击“只读检查”查看输入情况，再点击“开始转换”。遇到不能自动确定的部位/变体，报告会说明需要提供的信息。
 
+## 高级选项（图形界面）
+
+“显示高级选项”里有几项直接决定产物，遇到下面的情况再用：
+
+* **部位计划**：一个衣橱条目可以同时提供同一分类的多个部位（例如身体 + 头 + 头发）。
+  先点“只读检查”，打开“部位计划”后点“从只读检查结果填入全部候选”，再删掉你不需要的变体行。
+  同一部位有多个变体（例如披风可见 / 披风不可见两套身体）时，**转换器不会替你挑**，请在这里明确选择。
+* **隐藏原生部位**：本条目要求隐藏的原生部位（按住 Ctrl 多选）。例如一个不带披风的替换 MOD
+  需要隐藏 `CLOAK`，否则游戏原始披风会盖在新模型上。
+* **排除不可达资源**：整角色替换类 MOD 常同时包含其它变体、四分类之外的原生部位族（例如护身符）
+  和过场材质，默认会阻止转换。勾选后转换器会**逐条记录原因**并把它们排除，报告里的
+  `PRUNED_UNREACHABLE_RESOURCE` 就是这些条目；请核对原因，确认没有漏掉你要的部位。
+  它不会掩盖 Lua/插件行为，也不会补上缺失依赖。
+* **允许 CRC mismatch 写回**、**静态转换**：实验选项，只在报告明确指向它们时才勾选。
+
+`rules.hideParts` 会按原生体型可见性规则自动写入（披风不可见的体型自动隐藏 `CLOAK`），
+报告里以 `MANIFEST_HIDE_PARTS_FROM_BODY_RULES` 记录 `bodyId` 与自动隐藏项；不需要时请在命令行
+使用 `--no-body-rule-hides`。
+
 EXE 已内置 Python、定向解包程序、RSZ 元数据与格式读写器；玩家不需要安装 Python 或 Blender。结构化资源读写器需要系统安装 **.NET 10 x64 Runtime**（与配套衣橱系统相同）。开发者可在 `source` 目录使用 Python 3.11+、`requirements.txt` 和 `convert_mod.cmd`；见该目录的 `SOURCE-RUN.txt`。
 
 本次 `manba_2.pak` 的原始 PFB 与随包 RSZ 模板存在 CRC 差异。默认转换会停止；只有在高级选项中主动勾选 CRC 实验写回才会生成测试包。程序会重读并验证改写结果，但这不代表游戏内画面已经验证。
@@ -91,6 +110,6 @@ python mod_converter.py convert --input "D:\mods\mesh-replace" --output "D:\out\
 
 ## 报告和退出码
 
-`inspect` 是只读诊断：成功返回 0，发现阻止性问题返回 2。可用 `--report path.json` 将检查结果写入新文件。`convert` 成功返回 0；失败时新输出目录只会有 blocked 报告，不会有 manifest 或半成品资源；已有目录不会被修改，冲突报告会写到新的旁侧目录。也可以用 `converter_gui.py --cli convert ...` 无窗口执行。优先查看 `CONVERSION_BLOCKED`、`PAK_HASH_UNRESOLVED`、`NATIVE_PART_AMBIGUOUS`、`NATIVE_PART_NO_MATCH`、`DYNAMIC_BEHAVIOR_UNSUPPORTED`、`CRC_MISMATCH` 和 `GAME_ASSET_UNVERIFIED`。
+`inspect` 是只读诊断：成功返回 0，发现阻止性问题返回 2。可用 `--report path.json` 将检查结果写入新文件；报告里的 `nativePartCandidates` 会列出每个部位的原生候选，可直接用于“部位计划”。`convert` 成功返回 0；失败时新输出目录只会有 blocked 报告，不会有 manifest 或半成品资源；已有目录不会被修改，冲突报告会写到新的旁侧目录。也可以用 `converter_gui.py --cli convert ...` 无窗口执行。优先查看 `CONVERSION_BLOCKED`、`PAK_HASH_UNRESOLVED`、`NATIVE_PART_AMBIGUOUS`、`NATIVE_PART_NO_MATCH`、`DYNAMIC_BEHAVIOR_UNSUPPORTED`、`CRC_MISMATCH`、`RSZ_TEMPLATE_LAYOUT_MISMATCH`、`RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED`、`UNCONSUMED_MOD_RESOURCE` 和 `GAME_ASSET_UNVERIFIED`。
 
 真实回归记录（不随发行包携带测试 MOD 或游戏资产）位于工作区 `_validation/mod-converter-20260915` 和 `_validation/wardrobe-skeleton-20260916`：标准 `manba_2.pak` 与其已解包目录使用相同转换管线，2B base/alternate 的 93 关节骨架写入私有资源和 manifest，保护型 2B PAK 得到硬阻断报告，Scarlet 的 native/Lua 动态部分以及 264 关节 actor 骨架仍明确保留为不支持范围。

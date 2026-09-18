@@ -79,6 +79,14 @@ Scarlet 的 264 关节骨架、额外 actor 对象和脚本行为仍属于专用
 用户要完整迁移时，按 `$skill/references/special-mods.md` 分析和实现独立适配器；可以由 AI
 协助人工编码，但不承诺所有脚本或未知格式都能自动迁移。静态候选与完整迁移必须区分。
 
+没有脚本、没有插件，但覆盖多个部位/变体的整角色替换 MOD，不必立刻转专用适配：先用
+`inspect` 读 `stats.nativePartCandidates`，用部位计划（GUI 的“部位计划”或 `--parts-plan`）
+选定一套变体；确认四分类之外的原生部位族（例如护身符）与过场材质确实不需要后，可用
+`--prune-unreachable` 让转换器逐条记录原因并排除。作者的独立骨架若只在旋转/缩放上与原始
+`/90` 不一致，v1 契约会拒绝；把它留在输入里并同样交给 `--prune-unreachable`，转换器会改走
+「BODY mesh 内嵌休止」契约，报告以 `PRUNED_UNREACHABLE_RESOURCE` + `mesh-embedded-rest`
+标明这次回退。这仍然是静态候选：四分类之外的部件与任何动态行为都不会因此被迁移。
+
 常规转换通过后，用 `$skill\scripts\Pack-OWOTSMod.ps1 -ConvertedRoot ... -Archive 全新.zip`
 验证并打包。把实际 ZIP 和报告作为附件/可点击本地链接交给用户，说明包含的部位、
 变体、测试范围和剩余问题。若聊天平台无法附加本地文件，明确给出真实本地路径。

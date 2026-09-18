@@ -149,7 +149,16 @@ def bundled_file_list() -> Path | None:
 
 
 class ConversionError(RuntimeError):
-    """A user-actionable conversion failure."""
+    """A user-actionable conversion failure.
+
+    ``code`` becomes the report issue code.  A failure the operator must act on
+    differently (a stale bundled RSZ template versus an unclassified block) must
+    not arrive as one undifferentiated ``CONVERSION_BLOCKED``.
+    """
+
+    def __init__(self, message: str, code: str = "CONVERSION_BLOCKED") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclasses.dataclass
@@ -976,6 +985,48 @@ class PakArchive:
 class AppearanceWorker:
     """Small protocol client for the existing read/verify/rewrite worker."""
 
+    # Worker stderr is the only description of a failed AppearanceRsz run.
+    # These signatures separate a stale bundled RSZ template (a tool/version
+    # limitation with a documented next step) from an unclassified crash, so
+    # the report names the actionable cause instead of a raw traceback tail.
+    CRC_OVERRIDE_SIGNATURE = "template crc mismatch"
+    LAYOUT_FAILURE_RE = re.compile(
+        r"(?:charcount|furparameters|\bcount)\s+\d+\s+too large|rszclass\s+\d+\s+not found",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def failure_code(cls, detail: str) -> str:
+        """Classify a worker failure tail into a documented report code."""
+        if cls.CRC_OVERRIDE_SIGNATURE in detail.casefold():
+            return "RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED"
+        if cls.LAYOUT_FAILURE_RE.search(detail):
+            return "RSZ_TEMPLATE_LAYOUT_MISMATCH"
+        return "CONVERSION_BLOCKED"
+
+    @classmethod
+    def failure_message(cls, code: str, detail: str) -> str:
+        """Prefix the raw worker output with the documented next step."""
+        if code == "RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED":
+            return T(
+                "RSZ worker 因随包 RSZ 模板与资源类版本的 CRC 不一致而拒绝写回该结构化资源；这不是 MOD 缺陷。"
+                "接受实验范围时可显式启用 CRC 实验写回（--allow-crc-mismatch / 高级选项「允许 CRC mismatch 写回」），"
+                "worker 会重读并校验改写结果；不要用它掩盖其它失败。原始输出：",
+                "The RSZ worker refused to write this structured resource back because the bundled RSZ template CRCs differ "
+                "from this resource's class version; this is not a MOD defect. If you accept the experimental scope, enable the "
+                "explicit CRC write-back override (--allow-crc-mismatch / the advanced option) and the worker re-reads and verifies "
+                "the result. Never use it to hide an unrelated failure. Raw output: ",
+            ) + detail
+        if code == "RSZ_TEMPLATE_LAYOUT_MISMATCH":
+            return T(
+                "RSZ worker 无法解析该资源的字段布局：随包 RSZ 模板未覆盖这类/版本资源。"
+                "放宽 CRC 或跳过字段都不能修复布局问题；需要更新的 RSZ 模板，或把该部位交给专用适配器。原始输出：",
+                "The RSZ worker cannot parse this resource's field layout: the bundled RSZ template does not cover this class/version. "
+                "Relaxing CRC checks or skipping fields cannot fix a layout mismatch; an updated RSZ template, or a dedicated adapter "
+                "for this part, is required. Raw output: ",
+            ) + detail
+        return T("RSZ worker 失败：", "RSZ worker failed: ") + detail
+
     def __init__(self, executable: Path, template: Path, timeout: int = 120):
         self.executable = executable.resolve(strict=True)
         self.template = template.resolve(strict=True)
@@ -1035,7 +1086,8 @@ class AppearanceWorker:
                 raise ConversionError(T(f"RSZ worker 未完成：{error}", f"RSZ worker did not complete: {error}")) from error
             if process.returncode:
                 detail = (process.stderr + process.stdout).decode("utf-8", errors="replace")[-6000:]
-                raise ConversionError(T(f"RSZ worker 失败：{detail}", f"RSZ worker failed: {detail}"))
+                code = self.failure_code(detail)
+                raise ConversionError(self.failure_message(code, detail), code)
             try:
                 result = json.loads(result_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
@@ -1354,6 +1406,13 @@ class Converter:
         # the baseline joint names only and the runtime reads the mesh rest.
         self.actor_skeleton_mesh_only: bool = False
         self.actor_skeleton_joint_names: list[str] | None = None
+        # Read-only caches for the bundled native index and the input model
+        # stems; both are pure functions of data already loaded.
+        self._native_index_cache: list[dict[str, Any]] | None = None
+        self._source_stems_cache: list[str] | None = None
+        self._body_rules_cache: list[dict[str, Any]] | None = None
+        # Standalone rigs excluded from publishing by --prune-unreachable.
+        self.pruned_actor_skeletons: set[str] = set()
 
     def inspect(self) -> None:
         self.modinfo = parse_modinfo(self.args.input.resolve(), self.report) if self.args.input.is_dir() else None
@@ -1372,6 +1431,7 @@ class Converter:
             self.report.stats["partCandidates"] = candidates
             for logical, part in candidates:
                 self.report.info("PART_CANDIDATE", T(f"自动识别 {part} 资源", f"Auto-detected {part} resource"), logical, part=part)
+            self._report_native_part_candidates()
         if self.bundle.archive and self.bundle.archive.protected:
             self.report.stats["protectedPak"] = self.bundle.archive.protected
 
@@ -1412,13 +1472,51 @@ class Converter:
             self.report.error("DYNAMIC_BEHAVIOR_UNSUPPORTED", message, dynamic[0], files=dynamic)
 
     def _source_actor_skeleton_assets(self) -> list[Asset]:
-        """Return source FBXSKEL candidates in stable logical-path order."""
+        """Return source FBXSKEL candidates in stable logical-path order.
+
+        Rigs excluded by ``--prune-unreachable`` are omitted: the operator has
+        explicitly accepted that they are not published and that the body shape
+        falls back to the equipped BODY mesh rest.
+        """
         assert self.bundle
         return sorted(
             (asset for asset in self.bundle.source.assets.values()
-             if not asset.streaming and asset.extension == ".fbxskel"),
+             if not asset.streaming and asset.extension == ".fbxskel"
+             and asset.logical.casefold() not in self.pruned_actor_skeletons),
             key=lambda asset: asset.logical.casefold(),
         )
+
+    def _prune_unreachable_actor_skeletons(self) -> None:
+        """Exclude standalone rigs that no selected part's graph references.
+
+        Only active with the explicit ``--prune-unreachable`` opt-in, which is
+        the case the docs describe as "keep the private /90 in the private mod
+        directory (unused) or drop it".  Excluding a rig here makes the
+        documented mesh-embedded-rest contract take over, so the operator gets
+        body shape from the mesh they actually ship.  Every excluded rig is
+        reported individually with that fallback, never silently.
+        """
+        if not bool(getattr(self.args, "prune_unreachable", False)):
+            return
+        assert self.bundle
+        referenced = {dependency.casefold() for node in self.nodes.values()
+                      for dependency in node.dependencies}
+        for asset in sorted((item for item in self.bundle.source.assets.values()
+                             if not item.streaming and item.extension == ".fbxskel"),
+                            key=lambda item: item.logical.casefold()):
+            if asset.logical.casefold() in referenced:
+                continue
+            self.pruned_actor_skeletons.add(asset.logical.casefold())
+            self.report.warn(
+                "PRUNED_UNREACHABLE_RESOURCE",
+                T("独立骨架未被所选部位的依赖图引用；已按 --prune-unreachable 从发布集排除，"
+                  "体型改由当前 BODY mesh 的内嵌休止姿态提供（请确认这就是你要的契约）",
+                  "The standalone rig is not referenced by the selected parts' dependency graph; it was excluded from the "
+                  "published set by --prune-unreachable, and the body shape comes from the equipped BODY mesh's embedded rest "
+                  "instead (confirm this is the contract you want)"),
+                physical_for(asset.logical, asset.version, asset.streaming),
+                kind="actor-skeleton", fallback="mesh-embedded-rest",
+            )
 
     def _inspect_actor_skeleton_sources(self) -> None:
         """Parse source rigs and expose safe diagnostics during ``inspect``.
@@ -2027,26 +2125,35 @@ class Converter:
                 )
         self.report.stats["autoPartDependencyChecks"] = checks
 
-    def _auto_native_part_roots(self, requested_category: str | None,
-                                requested_part: str | None = None) -> dict[str, tuple[str, str, int]]:
-        """Infer native prefab/catalog/id from the bundled observed index.
+    def _native_index_records(self) -> list[dict[str, Any]]:
+        """Bundled read-only native part index, cached for one run.
 
-        Filename matching is only a candidate filter.  The selected bytes are
-        still resolved through GameReference (or the game PAK provider), and
-        equal-looking candidates with different IDs remain an explicit
-        ambiguity instead of a silent choice.
+        A missing index keeps the previous silent behaviour (a source checkout
+        without a prepared ``runtime/`` must still run); an unreadable one is
+        reported instead of being mistaken for "no candidates".
         """
+        cached = getattr(self, "_native_index_cache", None)
+        if cached is not None:
+            return cached
+        path = Path(__file__).resolve().parent / "runtime" / "owots_native_parts.json"
+        records: list[dict[str, Any]] = []
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))["records"]
+                if isinstance(value, list):
+                    records = [item for item in value if isinstance(item, dict)]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+                self.report.warn("NATIVE_INDEX_UNAVAILABLE", T(f"原生部位索引读取失败：{error}", f"Failed to read the native part index: {error}"), str(path))
+        self._native_index_cache = records
+        return records
+
+    def _source_part_stems(self) -> list[str]:
+        """Model stems in the input; only a candidate filter, never proof."""
+        cached = getattr(self, "_source_stems_cache", None)
+        if cached is not None:
+            return cached
         assert self.bundle
-        candidates = [Path(__file__).resolve().parent / "runtime" / "owots_native_parts.json"]
-        index_path = next((path for path in candidates if path.is_file()), None)
-        if not index_path:
-            return {}
-        try:
-            records = json.loads(index_path.read_text(encoding="utf-8"))["records"]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
-            self.report.warn("NATIVE_INDEX_UNAVAILABLE", T(f"原生部位索引读取失败：{error}", f"Failed to read the native part index: {error}"), str(index_path))
-            return {}
-        stems = []
+        stems: list[str] = []
         for asset in self.bundle.source.assets.values():
             if asset.streaming or asset.extension not in {".mesh", ".mdf2", ".pfb"}:
                 continue
@@ -2055,12 +2162,17 @@ class Converter:
             stem = re.sub(r"(?:_hq|_normal|_high|_low)$", "", stem)
             if len(stem) >= 5:
                 stems.append(stem)
-        if not stems:
-            return {}
+        self._source_stems_cache = stems
+        return stems
+
+    @staticmethod
+    def _native_index_matches(records: Sequence[dict[str, Any]], stems: Sequence[str],
+                              requested_category: str | None = None,
+                              requested_part: str | None = None) -> list[dict[str, Any]]:
+        """Index records whose native prefab stem equals a source stem exactly."""
+        stem_set = set(stems)
         matches: list[dict[str, Any]] = []
-        for record in records if isinstance(records, list) else ():
-            if not isinstance(record, dict):
-                continue
+        for record in records:
             part = str(record.get("part", "")).upper()
             category = PART_CATEGORY.get(part)
             prefab = record.get("prefab")
@@ -2072,17 +2184,82 @@ class Converter:
             if not isinstance(prefab, str) or not isinstance(catalog, str) or type(native) is not int:
                 continue
             base = PurePosixPath(prefab.replace("\\", "/")).name.casefold()
-            if base.endswith(".pfb"):
-                base_stem = base[:-4]
-            else:
-                base_stem = base
+            base_stem = base[:-4] if base.endswith(".pfb") else base
             base_stem = re.sub(r"_hq$", "", base_stem)
             # Match a complete model stem.  A loose substring would conflate
             # ch001_00_00 with ch001_00_00_AC and incorrectly merge variants.
-            if any(stem == base_stem for stem in stems):
+            if base_stem in stem_set:
                 matches.append({"part": part, "category": category, "prefab": logical_path(prefab),
                                 "catalog": logical_path(catalog), "native_id": native,
                                 "variant": str(record.get("variant", "normal")).casefold()})
+        return matches
+
+    def _report_native_part_candidates(self) -> None:
+        """List the bundled candidates so a front end can offer an explicit choice.
+
+        ``convert`` selects roots from this same index.  Reporting the
+        candidates during ``inspect`` lets a GUI show a picker instead of
+        making the operator reproduce an ambiguity error by hand.
+        """
+        assert self.bundle
+        stems = self._source_part_stems()
+        if not stems:
+            return
+        matches = self._native_index_matches(self._native_index_records(), stems)
+        if not matches:
+            return
+        # Mirror the selection rule: an HQ row is the same part as its normal
+        # row, so listing both would report a false ambiguity for every part.
+        preferred: list[dict[str, Any]] = []
+        alternates: list[dict[str, Any]] = []
+        for record in matches:
+            target = preferred if record["variant"] in {"normal", "base", ""} else alternates
+            target.append(record)
+        if preferred:
+            matches = preferred
+        by_part: dict[str, list[dict[str, Any]]] = {}
+        for record in matches:
+            by_part.setdefault(record["part"], []).append(record)
+        alternate_counts: dict[str, int] = {}
+        for record in alternates:
+            alternate_counts[record["part"]] = alternate_counts.get(record["part"], 0) + 1
+        summary: list[dict[str, Any]] = []
+        for part, values in sorted(by_part.items()):
+            unique = {(value["prefab"].casefold(), value["catalog"].casefold(), value["native_id"]): value
+                      for value in values}
+            rows = sorted(unique.values(), key=lambda item: (item["native_id"], item["prefab"].casefold()))
+            summary.append({
+                "part": part,
+                "category": PART_CATEGORY[part],
+                "candidates": [{"prefab": row["prefab"], "catalog": row["catalog"],
+                                "nativeId": row["native_id"], "variant": row["variant"]} for row in rows],
+                "alternateVariants": alternate_counts.get(part, 0),
+            })
+            if len(rows) > 1:
+                # Distinguish "several variants exist" (a choice) from
+                # "the same part twice" (an error), here in read-only mode.
+                self.report.warn(
+                    "NATIVE_PART_CANDIDATE_AMBIGUOUS",
+                    T("该部位有多个原生候选（不同变体）；转换前请用部位或部位计划明确选择，不要合并变体",
+                      "This part has several native candidates (different variants); choose explicitly with a part or a parts plan before converting, and never merge variants"),
+                    part, candidates=[row["prefab"] for row in rows])
+        self.report.stats["nativePartCandidates"] = summary
+
+    def _auto_native_part_roots(self, requested_category: str | None,
+                                requested_part: str | None = None) -> dict[str, tuple[str, str, int]]:
+        """Infer native prefab/catalog/id from the bundled observed index.
+
+        Filename matching is only a candidate filter.  The selected bytes are
+        still resolved through GameReference (or the game PAK provider), and
+        equal-looking candidates with different IDs remain an explicit
+        ambiguity instead of a silent choice.
+        """
+        assert self.bundle
+        stems = self._source_part_stems()
+        if not stems:
+            return {}
+        matches = self._native_index_matches(self._native_index_records(), stems,
+                                             requested_category, requested_part)
         normals = [record for record in matches if record["variant"] in {"normal", "base", ""}]
         if not normals:
             normals = matches
@@ -2173,6 +2350,59 @@ class Converter:
         self.report.stats["privateResources"] = len(self.routes)
         self.report.stats["sharedResources"] = len(self.nodes) - len(self.routes)
 
+    def _published_digests(self, consumed: set[str]) -> dict[tuple[str, int], list[tuple[str, str]]]:
+        """Digest every published MOD resource once, keyed by (suffix, bytes).
+
+        Hashing is deferred to this single pass so the unconsumed audit can
+        prove "this input is byte-identical to a published resource" without
+        re-reading a 50 MB texture per candidate.
+        """
+        assert self.bundle
+        table: dict[tuple[str, int], list[tuple[str, str]]] = {}
+        for asset in self.bundle.source.assets.values():
+            if asset.logical.casefold() not in consumed:
+                continue
+            table.setdefault((asset.extension, asset.size), []).append((asset.logical, asset.sha256))
+        return table
+
+    def _unconsumed_model_reason(self, asset: Asset,
+                                 published: dict[tuple[str, int], list[tuple[str, str]]]) -> tuple[str, dict[str, Any]]:
+        """Explain why an unconsumed model/material input was not reached.
+
+        The single legacy message ("add a part or choose a variant") is wrong
+        for inputs no wardrobe category can express, so only verifiable
+        statements are made here: byte-identical to a published resource, a
+        native part the bundled index knows, or an explicit "no reachable
+        owner".
+        """
+        digest = asset.sha256
+        for logical, published_digest in published.get((asset.extension, asset.size), ()):
+            if published_digest == digest:
+                return (T("该资源与已发布资源内容完全相同（SHA-256 相同），不含额外画面数据；可从输入中删除",
+                          "This resource is byte-identical (same SHA-256) to a published resource and carries no extra visual data; it can be removed from the input"),
+                        {"sameContentAs": logical})
+        for record in self._native_index_matches(self._native_index_records(), [self._stem_for(asset)]):
+            return (T(f"该资源匹配原生部位 {record['part']}（nativeId {record['native_id']}，catalog {record['catalog']}），"
+                      "属于本次未选择的部件或变体；请单独转换该变体，或把它加入部位计划",
+                      f"This resource matches the native part {record['part']} (nativeId {record['native_id']}, catalog {record['catalog']}), "
+                      "which belongs to a part or variant that was not selected; convert that variant separately or add it to a parts plan"),
+                    {"nativePart": record["part"], "nativeId": record["native_id"],
+                     "catalog": record["catalog"], "prefab": record["prefab"]})
+        return (T("该资源没有任何所选部位的依赖图引用。四分类（body/cloak/gauntlet/weapon）之外的原生玩家部件族，"
+                  "以及没有 partslist PFB 归属的子网格/过场变体，都不能由静态衣橱条目表达；"
+                  "请确认是否需要专用适配，或把该文件从输入中移除",
+                  "No selected part's dependency graph reaches this resource. Native player part families outside the four "
+                  "categories (body/cloak/gauntlet/weapon), and sub-meshes / cutscene variants that no partslist PFB owns, "
+                  "cannot be expressed by a static wardrobe entry; decide whether a dedicated adapter is required, or remove "
+                  "the file from the input"),
+                {"reachableOwner": None})
+
+    @staticmethod
+    def _stem_for(asset: Asset) -> str:
+        """Model stem of one asset, normalized like ``_source_part_stems``."""
+        name = PurePosixPath(asset.logical).name.casefold()
+        return re.sub(r"(?:_hq|_normal|_high|_low)$", "", name.split(".", 1)[0])
+
     def _audit_unconsumed_mod_assets(self) -> None:
         """Make extra model assets visible instead of silently dropping them."""
         assert self.bundle
@@ -2189,6 +2419,14 @@ class Converter:
         ]
         allow = bool(getattr(self.args, "allow_unconsumed_resources", False))
         strict_compat = bool(getattr(self.args, "strict_unconsumed", False))
+        prune = bool(getattr(self.args, "prune_unreachable", False))
+        published = self._published_digests(consumed) if unconsumed else {}
+        if prune:
+            # An explicit opt-in still records every excluded input with its
+            # reason; nothing is dropped silently and the guard stays visible.
+            self.report.stats["prunedModResources"] = [
+                physical_for(asset.logical, asset.version, asset.streaming) for asset in unconsumed
+            ]
         for asset in unconsumed:
             location = physical_for(asset.logical, asset.version, asset.streaming)
             if asset.extension == ".fbxskel":
@@ -2200,34 +2438,62 @@ class Converter:
                 # candidate analysis has been run yet.
                 if asset.logical.casefold() in self.actor_skeleton_keys:
                     continue
+                if asset.logical.casefold() in self.pruned_actor_skeletons:
+                    # Already itemised with its fallback by the rig prune step.
+                    continue
                 message = T("独立骨架未被所选部位引用；静态衣橱不会自动替换角色根骨架，"
                             "体型可能保持游戏原始比例。需要专用骨架适配并验证实际关节位置",
                             "The standalone rig is not referenced by the selected parts; a static "
                             "wardrobe will not automatically replace the actor root skeleton, so the "
                             "body may keep the game's original proportions. A dedicated skeleton "
                             "adapter is required and actual joint positions must be verified")
-                if strict_compat or not allow:
+                if prune:
+                    self.report.warn("PRUNED_UNREACHABLE_RESOURCE",
+                                     message + T("（已按 --prune-unreachable 从发布集排除；若 BODY 网格可达，"
+                                                 "体型改由当前 BODY mesh 的内嵌休止姿态提供）",
+                                                 " (excluded from the published set by --prune-unreachable; when a BODY mesh is reachable, "
+                                                 "the body shape comes from the equipped BODY mesh's embedded rest instead)"),
+                                     location, kind="actor-skeleton")
+                elif strict_compat or not allow:
                     self.report.error("ACTOR_SKELETON_ADAPTER_REQUIRED", message, location)
                 else:
                     self.report.warn("ACTOR_SKELETON_ADAPTER_REQUIRED",
                                      message + T("（显式实验选项仅允许静态候选，未迁移独立骨架）", " (the explicit experimental option only allows the static candidate; the standalone rig was not migrated)"),
                                      location)
             elif asset.extension in STRUCTURED_EXTENSIONS | {".mesh", ".tex"}:
-                message = T("MOD 中的模型/材质资源未被当前部位依赖图消费；请增加部位或选择变体", "Model/material resources in the MOD are not consumed by the current part dependency graph; add a part or choose a variant")
-                if strict_compat or not allow:
-                    self.report.error("UNCONSUMED_MOD_RESOURCE", message, location)
+                message, details = self._unconsumed_model_reason(asset, published)
+                if prune:
+                    self.report.warn("PRUNED_UNREACHABLE_RESOURCE",
+                                     message + T("（已按 --prune-unreachable 从发布集排除，不会静默复制）",
+                                                 " (excluded from the published set by --prune-unreachable; never copied silently)"),
+                                     location, **details)
+                elif strict_compat or not allow:
+                    self.report.error("UNCONSUMED_MOD_RESOURCE", message, location, **details)
                 else:
                     self.report.warn("UNCONSUMED_MOD_RESOURCE",
-                                     message + T("（实验选项允许继续，资源仍不会静默复制）", " (the experimental option allows continuing; the resource is still not copied silently)"), location)
+                                     message + T("（实验选项允许继续，资源仍不会静默复制）", " (the experimental option allows continuing; the resource is still not copied silently)"),
+                                     location, **details)
             else:
-                if strict_compat:
+                aux_details: dict[str, Any] = {}
+                matches = self._native_index_matches(self._native_index_records(), [self._stem_for(asset)])
+                if matches:
+                    # Name the native part even for a leaf companion (chain,
+                    # physics), so "which variant is this?" is answerable.
+                    aux_details = {"nativePart": matches[0]["part"], "nativeId": matches[0]["native_id"],
+                                   "catalog": matches[0]["catalog"], "prefab": matches[0]["prefab"]}
+                if prune:
+                    self.report.warn("PRUNED_UNREACHABLE_RESOURCE",
+                                     T("MOD 中的附属资源未被当前部位依赖图消费，已按 --prune-unreachable 从发布集排除，未静默复制",
+                                       "An auxiliary resource in the MOD is not consumed by the current part dependency graph; it was excluded from the published set by --prune-unreachable and is never copied silently"),
+                                     location, **aux_details)
+                elif strict_compat:
                     self.report.error("UNCONSUMED_MOD_RESOURCE",
                                       T("MOD 中的附属资源未被当前部位依赖图消费，未静默复制", "Auxiliary resources in the MOD are not consumed by the current part dependency graph; not copied silently"),
-                                      location)
+                                      location, **aux_details)
                 else:
                     self.report.warn("UNCONSUMED_MOD_RESOURCE",
                                      T("MOD 中的附属资源未被当前部位依赖图消费，未静默复制", "Auxiliary resources in the MOD are not consumed by the current part dependency graph; not copied silently"),
-                                     location)
+                                     location, **aux_details)
 
     def _copy_or_rewrite(self, node: ResourceNode, destination: Path,
                          remap: Mapping[str, str], selection: int | None,
@@ -2305,6 +2571,65 @@ class Converter:
             "baselineResource": ACTOR_SKELETON_BASELINE_RESOURCE,
         }
 
+    # Per-body visibility lives in the bundled rules file the runtime also uses
+    # for its built-in entries.  A MOD body that replaces a stock body whose
+    # rule hides a part must hide the same part, or the original cloak/head
+    # stays visible over the replacement.
+    BODY_RULE_HIDES = (("IsVisibleCloak", False, "CLOAK"), ("IsInvisibleHead", True, "HEAD"))
+
+    def _body_rules(self) -> list[dict[str, Any]]:
+        """Read-only bundled per-body visibility rules, cached for one run."""
+        cached = getattr(self, "_body_rules_cache", None)
+        if cached is not None:
+            return cached
+        path = Path(__file__).resolve().parent / "runtime" / "owots_body_rules.json"
+        records: list[dict[str, Any]] = []
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))["records"]
+                if isinstance(value, list):
+                    records = [item for item in value if isinstance(item, dict)]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+                self.report.warn("BODY_RULES_UNAVAILABLE", T(f"原生体型可见性规则读取失败：{error}", f"Failed to read the native body visibility rules: {error}"), str(path))
+        self._body_rules_cache = records
+        return records
+
+    def _body_rule_hide_parts(self) -> tuple[list[str], dict[str, Any] | None]:
+        """Derive ``rules.hideParts`` from the selected body's visibility rules.
+
+        ``owots_body_rules.json`` is read-only bundled data observed from
+        ``PlayerModelVisualSettingParam``.  Only the two flags the runtime's
+        built-in entries honour are derived; a part this entry publishes is
+        never hidden, and it is named in the report instead.
+        """
+        if self.args.category != "body" or "BODY" not in self.part_roots:
+            return [], None
+        native_id = self.part_roots["BODY"][2]
+        if native_id is None:
+            return [], None
+        record = next((item for item in self._body_rules() if item.get("BodyID") == native_id), None)
+        if record is None:
+            return [], None
+        supplied = set(self.part_roots)
+        derived: list[str] = []
+        skipped: list[str] = []
+        for field, expected, part in self.BODY_RULE_HIDES:
+            if record.get(field) is not expected:
+                continue
+            if part in supplied:
+                skipped.append(part)
+                continue
+            derived.append(part)
+        details: dict[str, Any] = {
+            "bodyId": native_id,
+            "isVisibleCloak": bool(record.get("IsVisibleCloak")),
+            "isInvisibleHead": bool(record.get("IsInvisibleHead")),
+            "derived": derived,
+        }
+        if skipped:
+            details["suppliedPartsNotHidden"] = skipped
+        return derived, details
+
     def convert(self, output: Path) -> None:
         output = output.resolve()
         input_path = self.args.input.resolve()
@@ -2330,6 +2655,7 @@ class Converter:
         if self.game is None and getattr(self.args, "game_root", None):
             self._prepare_game()
         self._discover_graph([item for values in self.part_roots.values() for item in values[:2] if item])
+        self._prune_unreachable_actor_skeletons()
         self._prepare_actor_skeleton()
         self._prepare_mesh_actor_skeleton()
         self._verify_auto_part_graph()
@@ -2424,6 +2750,13 @@ class Converter:
             author = self.modinfo.values.get("author", "") if self.modinfo else ""
             name = self.modinfo.values.get("name", identity) if self.modinfo else identity
             hide_parts = [str(part).upper() for part in (getattr(self.args, "hide_parts", ()) or ())]
+            body_hides: list[str] = []
+            body_rule_details: dict[str, Any] | None = None
+            if bool(getattr(self.args, "body_rule_hides", True)):
+                body_hides, body_rule_details = self._body_rule_hide_parts()
+                for part in body_hides:
+                    if part not in hide_parts:
+                        hide_parts.append(part)
             incompatible_categories = [
                 str(category).casefold()
                 for category in (getattr(self.args, "incompatible_categories", ()) or ())
@@ -2436,6 +2769,12 @@ class Converter:
                     any(category not in PARTS or category == self.args.category
                         for category in incompatible_categories)):
                 raise ConversionError(T("--incompatible-category 不能重复、未知或等于当前分类", "--incompatible-category must not repeat, must be known, and must not equal the current category"))
+            if body_rule_details is not None:
+                self.report.info(
+                    "MANIFEST_HIDE_PARTS_FROM_BODY_RULES",
+                    T("已按原生体型可见性规则写入 rules.hideParts；不需要时用 --no-body-rule-hides 关闭",
+                      "Wrote rules.hideParts from the native body visibility rules; disable with --no-body-rule-hides"),
+                    None, **body_rule_details)
             manifest = {
                 "schemaVersion": SCHEMA_VERSION, "id": identity, "name": name,
                 "category": self.args.category, "parts": manifest_parts,
@@ -2507,6 +2846,11 @@ def make_parser() -> argparse.ArgumentParser:
                          help=T("兼容旧参数：把所有未消费资源视为错误（模型/材质默认已严格阻止）", "Legacy-compatible option: treat every unconsumed resource as an error (models/materials are already blocked strictly by default)"))
     convert.add_argument("--allow-unconsumed-resources", action="store_true",
                          help=T("实验选项：允许未消费的模型/材质继续（报告列出且不会静默复制）", "Experimental option: allow unconsumed models/materials to continue (listed in the report and never copied silently)"))
+    convert.add_argument("--prune-unreachable", action="store_true",
+                         help=T("只发布所选部位依赖图可达的资源；其余资源逐条记录原因后排除（默认阻止；不可达的独立骨架会让体型回退到 BODY mesh 内嵌休止）",
+                                "Publish only resources reachable from the selected parts' graph; every other resource is itemised and excluded (blocked by default; an unreachable standalone rig falls back to the BODY mesh embedded rest)"))
+    convert.add_argument("--no-body-rule-hides", dest="body_rule_hides", action="store_false", default=True,
+                         help=T("不按原生体型可见性规则自动写入 rules.hideParts", "Do not derive rules.hideParts from the native body visibility rules"))
     convert.add_argument("--experimental-static-only", action="store_true",
                          help=T("实验选项：明确接受省略 Lua/原生插件的静态转换，不声称动态行为等价", "Experimental option: explicitly accept a static conversion that omits Lua/native plugins, without claiming dynamic behavior equivalence"))
     convert.add_argument("--allow-unverified-game-assets", action="store_true",
@@ -2587,7 +2931,7 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
         return 0
     except (ConversionError, OSError, ValueError) as error:
-        report.error("CONVERSION_BLOCKED", str(error))
+        report.error(getattr(error, "code", "CONVERSION_BLOCKED"), str(error))
         report.status = "blocked"
         if args.command == "convert" and getattr(args, "output", None):
             output = args.output.resolve()
