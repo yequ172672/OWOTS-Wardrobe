@@ -45,9 +45,12 @@ if ([IO.Path]::GetExtension($archivePath) -ine '.zip' -or (Test-Path -LiteralPat
 if ($archivePath.StartsWith($rootPath + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Archive must be outside converted directory' }
 $reportPath = Join-Path $rootPath 'conversion-report.json'
 $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($report.status -ne 'converted' -or @($report.issues | Where-Object severity -eq 'error').Count) { throw 'Conversion report is not successful' }
+$batchReport = $null -ne $report.PSObject.Properties['entries']
+$issues = if ($null -ne $report.PSObject.Properties['issues']) { @($report.issues) } else { @() }
+if ($report.status -notin @('converted','needs_test') -or @($issues | Where-Object severity -eq 'error').Count) { throw 'Conversion report is not successful' }
+if (-not $batchReport -and $report.status -ne 'converted') { throw 'Legacy conversion report is not successful' }
 $experimentalCodes = @('UNCONSUMED_MOD_RESOURCE','GAME_ASSET_UNVERIFIED','DYNAMIC_BEHAVIOR_UNSUPPORTED','CRC_MISMATCH')
-$experimentalIssues = @($report.issues | Where-Object { $_.code -in $experimentalCodes })
+$experimentalIssues = @($issues | Where-Object { $_.code -in $experimentalCodes })
 if ($experimentalIssues.Count -and (-not $ReviewedExperimentalReason -or $ReviewedExperimentalReason.Trim().Length -lt 20)) {
     throw 'Experimental/partial conversion requires an explicit, evidence-based ReviewedExperimentalReason and an experimental deliverable scope'
 }
@@ -73,10 +76,11 @@ $manifests = @($files | Where-Object Name -eq 'manifest.json')
 if (-not $manifests.Count) { throw 'No wardrobe manifest exists' }
 $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $entries = [Collections.Generic.List[object]]::new()
+$equipDeclarations = [Collections.Generic.List[object]]::new()
 $allowedParts = @{body=@('BODY','BODY_SUB','HEAD','HAIR'); cloak=@('CLOAK'); gauntlet=@('GAUNTLET'); weapon=@('WEAPON','SHEATH','WEAPON_SUB','SHEATH_SUB','BOW')}
 foreach ($file in $manifests) {
     $manifest = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($manifest.schemaVersion -ne 2 -or $manifest.category -cnotin @('body','cloak','gauntlet','weapon') -or
+    if ($manifest.schemaVersion -notin @(2,3) -or $manifest.category -cnotin @('body','cloak','gauntlet','weapon') -or
         $manifest.id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,127}$' -or -not $manifest.name) { throw 'Invalid manifest schema/category/id/name' }
     if (Test-Path -LiteralPath (Join-Path $file.DirectoryName 'modinfo.ini')) { throw 'Adjacent modinfo.ini can override manifest rules; use an independently verified special packaging workflow' }
     if (-not $ids.Add($manifest.id)) { throw 'Duplicate wardrobe ID' }
@@ -94,7 +98,26 @@ foreach ($file in $manifests) {
     foreach ($category in @($manifest.rules.incompatibleCategories)) {
         if ($category -cnotin @('body','cloak','gauntlet','weapon') -or $category -ceq $manifest.category) { throw 'Invalid incompatible category' }
     }
+    if ($null -ne $manifest.rules.PSObject.Properties['equip']) {
+        if ($manifest.schemaVersion -ne 3 -or $manifest.category -cne 'body' -or -not $parts.Contains('BODY')) { throw 'Declared equipment requires a schema 3 BODY entry' }
+        if ($manifest.rules.equip -isnot [pscustomobject]) { throw 'Invalid equipment declaration' }
+        foreach ($declaration in $manifest.rules.equip.PSObject.Properties) {
+            if ($declaration.Name -cnotin @('cloak','gauntlet') -or $declaration.Value -isnot [string] -or
+                $declaration.Value -cnotmatch '^[a-z0-9][a-z0-9._-]{0,127}$' -or $declaration.Value -ceq $manifest.id -or
+                $declaration.Name -cin @($manifest.rules.incompatibleCategories) -or $declaration.Name.ToUpperInvariant() -cin @($manifest.rules.hideParts)) { throw 'Invalid equipment target or conflicting rule' }
+            $equipDeclarations.Add([pscustomobject]@{category=$declaration.Name; id=$declaration.Value})
+        }
+    }
     $entries.Add([pscustomobject]@{id=$manifest.id; category=$manifest.category; parts=@($parts)})
+}
+foreach ($declaration in $equipDeclarations) {
+    if (@($entries | Where-Object { $_.id -ceq $declaration.id -and $_.category -ceq $declaration.category }).Count -ne 1) { throw 'Declared equipment is missing from package' }
+}
+if ($batchReport) {
+    if (@($report.entries).Count -ne $entries.Count) { throw 'Batch report and output registrations differ' }
+    foreach ($reported in $report.entries) {
+        if (@($entries | Where-Object { $_.id -ceq $reported.id -and $_.category -ceq $reported.category }).Count -ne 1) { throw 'Batch report registration is missing from package' }
+    }
 }
 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($archivePath))
 $zipStream = [IO.File]::Open($archivePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
@@ -113,4 +136,4 @@ try {
 } finally { $zip.Dispose(); $zipStream.Dispose() }
 [pscustomobject]@{status=$(if ($experimentalIssues.Count) {'packaged_experimental'} else {'packaged'}); archive=$archivePath; bytes=(Get-Item -LiteralPath $archivePath).Length;
     sha256=(File-Sha256 $archivePath);
-    entries=@($entries); fileCount=$files.Count; gameVisualTested=$false} | ConvertTo-Json -Depth 6
+    entries=@($entries); fileCount=$files.Count; conversionStatus=$report.status; gameVisualTested=$false} | ConvertTo-Json -Depth 6

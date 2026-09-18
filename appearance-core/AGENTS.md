@@ -6,10 +6,10 @@
 | `Appearance.Core.csproj` | Plain .NET library with no REFramework dependency |
 | `AppearanceRegistry.cs` | Manifest parsing, deterministic conflict handling and independent cosmetic choices |
 | `WardrobeComposition.cs` | Four-category requested/effective composition and hide/conflict planning used by the runtime adapter |
-| `WardrobeManifest.cs` | Strict schema 2 logical category/resource/rule parser with optional skeleton metadata; does not migrate v1 or imply native hide support |
+| `WardrobeManifest.cs` | Strict schema 2 resources / schema 3 rules.equip parser with optional skeleton metadata; categories remain separate |
 | `WardrobeSkeleton.cs` | Strict optional schema 1 actor-fbxskel declaration with 93-joint metadata and immutable snapshots |
 | `WardrobeRegistry.cs` | Combined v1/v2 registry; read-only legacy category projection, stable IDs and whole-package conflict rejection |
-| `WardrobeSelectionState.cs` | Four-category choice references and per-category legacy intent retention used by native apply and sidecar snapshots |
+| `WardrobeSelectionState.cs` | Four-category intent, body-declared accessory defaults, reversible sources and later manual overrides used by apply/save |
 | `WardrobeSaveStore.cs` | V2 sidecar storage, immutable state snapshots, read-only v1 migration and original-content backup before first v2 write |
 | `NativeCostumeSelections.cs` | Explicit native menu confirmation tracking, separate from unconditional close/apply |
 | `WardrobePreferences.cs` | Versioned hotkey/view/feature preferences with validated atomic publication |
@@ -27,6 +27,8 @@
 - .NET 10 SDK and runtime; no third-party packages.
 
 ## For AI Agents
+- `rules.equip` (schema 3 body only) references separately registered cloak/gauntlet IDs. `Choose` applies defaults once per explicit body wear; subsequent manual accessory choices override them. Body cancel/change restores only untouched defaults. `Resolve` never re-imposes defaults during polling/load; absent bodies stop imposing defaults without erasing saved intent, while missing required accessories set `IncompleteDeclaredEquipment` so native apply preserves the previous complete outfit.
+- Sidecars write version 3 only when reversible equipment source metadata is present, read old v1/v2, and preserve a content-addressed v2 backup before first upgrade. Freeze copies and validates the previous-choice/override records. Runtime must preserve `Equipment` when copying selection states.
 - New INI candidate: ReadDirectory merges sibling modinfo.ini common metadata and wardrobe.<category> declarations over generated schema 2 asset manifests. Preserve v1 and manifests without INI. Duplicate keys/sections or mismatched IDs reject the package; reading never writes the author file. Core tests and runtime-reference compilation pass; candidate bundle 41bd81bd86143b59fafb62d67ae4a6c48b0e8e7841bac9968fa568a6c7e701d4 was installed after verified game exit; live startup/INI override acceptance is pending.
 - Latest source uses WardrobeSaveStore and generic snapshot transactions in the lab, including v1 read migration and v2 combination restoration. The installed bundle (SHA256 7450e0cf2c462ad8e130ec5bdcca3c4d3e1269d9b3195604f6ac1ae2f079c936, verified 2026-09-15) includes this integration. The newer read-only wardrobe_status candidate is uninstalled. Unit filesystem checks and compiler success do not prove native v2 save/load acceptance.
 - AppearanceSaveTransactions<T> shares verified native preparation/completion semantics for immutable snapshots; its legacy wrapper preserves existing callers. V2 writes must pass WardrobeSaveStore.Freeze and use the native verified key. V1 read migration never writes; first v2 publication preserves a content-addressed v1 backup. The lab uses native callbacks and UI snapshots; actual four-category save/load acceptance remains pending.

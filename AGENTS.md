@@ -11,12 +11,14 @@ repository on 2026-09-16 so the MCP checkout stays upstream-focused.
 | `reframework` | In-game wardrobe plugin source (`plugins/source/OWOTSAppearanceLab.cs`) and the inert 2B retirement marker (`autorun/`) |
 | `mod-converter` | Standalone loose/PAK appearance converter and diagnostic reports |
 | `release-tools` | Reproducible OWOTS test-release packaging, install, verify and rollback helpers |
+| `release` | Local converter and wardrobe distribution packages and checksums; entirely ignored by Git |
 | `special-adapters` | Dedicated scripted-MOD migrations (Scarlet, YoRHa 2B) kept separate from the converter |
 | `docs` | Requirements, runtime/UI/save research, the independent-skeleton contract and the MOD authoring guide |
 
 ## Key Files
 | File | Purpose |
 | --- | --- |
+| `docs/OWOTS_CONVERTER_REDESIGN.md` / `docs/OWOTS_CONVERTER_PROTOTYPE.html` | Converter design history; the original complex prototype is superseded by the minimal native GUI in mod-converter/converter_gui.py |
 | `docs/OWOTS_INDEPENDENT_SKELETON.md` | Manifest-driven independent actor skeleton contract, conversion scope and manual acceptance |
 | `docs/OWOTS_MOD_AUTHORING.md` | MOD authoring/adaptation guide: converter workflow, manifest contract, principles |
 | `docs/OWOTS_APPEARANCE_*` / `docs/OWOTS_WARDROBE_*` | Appearance system requirements, runtime research, UI/save research, user guide and export plan |
@@ -28,10 +30,12 @@ repository on 2026-09-16 so the MCP checkout stays upstream-focused.
 - Game data at `D:\gametest\steamapps\common\OnimushaWotS` stays read-only; never bundle game assets or saves in source releases.
 
 ## For AI Agents
+- Converter appearance deduplication belongs to `mod-converter/appearance_duplicates.py`: compare effective content and resulting hide/equip choices, record covered native targets, and preserve uncertain or distinct appearances. Native target count is not outfit count. Keep distribution builds in ignored `release/`.
+- Converter V2 keeps body/cloak/gauntlet separately registered. Schema 3 adds body `rules.equip` references; core selection applies them only for explicit body wear, retains later manual overrides, and reverses untouched defaults on cancel/change. Native apply rejects incomplete declared accessories even during restoration. Engine-forced companion parts must not duplicate any explicitly selected part from another category. Core regression and bundled runtime compilation pass; live acceptance of this new rule is pending. User scope excludes forced compatibility for special rigs/scripts.
 - Independent skeleton is a single implementation in the plugin: `OWOTSAppearanceLab.MotionRebase` on `[Callback(typeof(LateUpdateBehavior), CallbackType.Post)]`. Keep the root `/90` stock and set `rootRest + (rest - rootRest)` on the changed root joints, where `rest` is the manifest `bindPositions` when declared, otherwise the equipped BODY mesh's `get_BaseLocalPosition`. The write must run on this late phase; `UpdateMotion`/`UpdateBehavior` writes were overwritten during normal gameplay. Never create a resource, hold a holder, or call the retired `DummySkeleton` swap.
 - The enable switch is `WardrobePreferences.IndependentSkeleton` in the wardrobe settings; the runtime Lua controller was retired (no second writer, no second config).
 - A mod's private `/90` fbxskel must never be installed at the game root skeleton path; keep it in the private mod directory (unused) or drop it.
-- Deploy `build_lab.py` output, never the unbundled lab source. Release outputs belong under workspace `_validation`, not this repository.
+- Deploy `build_lab.py` output, never the unbundled lab source. Per user instruction (2026-09-18), final distribution packages belong in this repository's Git-ignored `release/`. Private test assets, build intermediates and diagnostic evidence remain in workspace `_validation/`.
 - Converter/skeleton evidence lives in workspace `_validation/` (e.g. `owots-joint-rebase-probe-20260916`, `wardrobe-hotreload-20260916`), outside this repo.
 - Menu / main-menu character sharing is implemented in the same plugin (not a second writer): `PlayerManager.getControllingPlayerCharacterUI()` + `requestChangeModelPlayerUI(PARTS_TYPE,int)` push the selected MOD IDs, `PollUiCharacter` re-pushes after menu rebuilds, and both the joint rebase (`s_uiRebaseEntries`) and declared-part hiding (`PollVisibility`) cover the UI character. Enable switch is `WardrobePreferences.UiCharacterSync` (default true).
 - Four-category apply merges outfit and weapon into one physical entry and switches MODs atomically: the new prefabs preload while the old MOD stays applied, then one game-thread call withdraws, registers and republishes the selection; the previous parts go to `s_retiringParts` and are released only after `_ModelIDs` moves off them. Runtime IDs are per-combination (`runtime.wardrobe.<kind>.<comboKey>`) because the native `checkModelChange` compares model IDs.

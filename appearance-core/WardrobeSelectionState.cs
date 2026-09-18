@@ -2,15 +2,21 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace OWOTS.Appearance;
 
 // A legacy reference resolves per category. This preserves a missing package without
 // guessing which optional parts it contained, or clearing other categories on a manual change.
 public sealed record WardrobeSelection(string? EntryId, string? LegacyBundleId);
+public sealed record WardrobeEquipState(string DeclaringBodyId,
+    IReadOnlyDictionary<WardrobeCategory, WardrobeSelection?> PreviousSelections,
+    IReadOnlyList<WardrobeCategory> Overridden);
 public sealed record WardrobeSelectionState(IReadOnlyDictionary<WardrobeCategory, WardrobeSelection?> Requested,
-    WardrobeVisibilityOptions Visibility);
-public sealed record WardrobeSelectionResolution(WardrobeCompositionResult Composition, IReadOnlyList<string> Issues);
+    WardrobeVisibilityOptions Visibility,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WardrobeEquipState? Equipment = null);
+public sealed record WardrobeSelectionResolution(WardrobeCompositionResult Composition, IReadOnlyList<string> Issues,
+    bool IncompleteDeclaredEquipment = false);
 
 public static class WardrobeSelections
 {
@@ -32,13 +38,35 @@ public static class WardrobeSelections
         if (entryId != null && (!registry.Entries.TryGetValue(entryId, out var entry) || entry.Rules.Category != category))
             throw new InvalidOperationException("Missing or wrong-category entry");
         var requested = state.Requested.ToDictionary(pair => pair.Key, pair => pair.Value);
+        var equipment = state.Equipment;
+        if (category == WardrobeCategory.Body) {
+            // Withdraw only this body's defaults. Later explicit user choices survive.
+            if (equipment != null)
+                foreach (var previous in equipment.PreviousSelections)
+                    if (!equipment.Overridden.Contains(previous.Key)) requested[previous.Key] = previous.Value;
+            equipment = null;
+            if (entryId != null && registry.Entries[entryId].Rules.Equip is { Count: > 0 } equip) {
+                var previous = new Dictionary<WardrobeCategory, WardrobeSelection?>();
+                foreach (var pair in equip) {
+                    if (!registry.Entries.TryGetValue(pair.Value, out var accessory) || accessory.Rules.Category != pair.Key)
+                        throw new InvalidOperationException("Missing or wrong-category declared accessory: " + pair.Value);
+                    requested.TryGetValue(pair.Key, out var beforeAccessory);
+                    previous[pair.Key] = beforeAccessory;
+                    requested[pair.Key] = new(pair.Value, null);
+                }
+                equipment = new(entryId, new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(previous),
+                    Array.Empty<WardrobeCategory>());
+            }
+        } else if (equipment != null && equipment.PreviousSelections.ContainsKey(category)) {
+            equipment = equipment with { Overridden = Array.AsReadOnly(equipment.Overridden.Append(category).Distinct().ToArray()) };
+        }
         requested[category] = entryId == null ? null : new(entryId, null);
         var before = Resolve(state, registry).Composition;
         before.Effective.TryGetValue(category, out var previousDeclaringId);
         // Changing a category is a new choice and cannot silently carry its old force approval.
         return new(new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(requested), state.Visibility with {
             ConfirmedOverrides = Array.AsReadOnly(state.Visibility.ConfirmedOverrides.Where(grant =>
-                grant.Category != category && grant.DeclaringId != previousDeclaringId).ToArray()) });
+                grant.Category != category && grant.DeclaringId != previousDeclaringId).ToArray()) }, equipment);
     }
 
     public static WardrobeSelectionState SetVisible(WardrobeSelectionState state, WardrobeCategory category, bool visible)
@@ -91,7 +119,22 @@ public static class WardrobeSelections
     {
         var resolved = new Dictionary<WardrobeCategory, string?>();
         var issues = new List<string>();
-        foreach (var pair in state.Requested) {
+        var requests = state.Requested.ToDictionary(pair => pair.Key, pair => pair.Value);
+        bool incompleteEquipment = false;
+        if (state.Equipment is { } equipment) {
+            if (!registry.Entries.TryGetValue(equipment.DeclaringBodyId, out var declaring) || declaring.Rules.Category != WardrobeCategory.Body) {
+                // Inactive/missing bodies cannot keep imposing accessory defaults. Stored intent stays intact.
+                foreach (var previous in equipment.PreviousSelections)
+                    if (!equipment.Overridden.Contains(previous.Key)) requests[previous.Key] = previous.Value;
+            } else foreach (var category in equipment.PreviousSelections.Keys.Where(category => !equipment.Overridden.Contains(category))) {
+                requests.TryGetValue(category, out var choice);
+                if (choice?.EntryId == null || !registry.Entries.TryGetValue(choice.EntryId, out var accessory) || accessory.Rules.Category != category) {
+                    incompleteEquipment = true;
+                    issues.Add("Missing declared accessory for " + equipment.DeclaringBodyId + ": " + (choice?.EntryId ?? category.ToString()));
+                }
+            }
+        }
+        foreach (var pair in requests) {
             if (!Enum.IsDefined(pair.Key)) throw new ArgumentException("Unknown saved category");
             var selection = pair.Value;
             if (selection == null) { resolved[pair.Key] = null; continue; }
@@ -115,6 +158,6 @@ public static class WardrobeSelections
         var composition = WardrobeComposition.Resolve(resolved,
             registry.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.Rules), state.Visibility);
         issues.AddRange(composition.Issues);
-        return new(composition, issues.AsReadOnly());
+        return new(composition, issues.AsReadOnly(), incompleteEquipment);
     }
 }

@@ -2,6 +2,9 @@
 param(
     [string]$OutputRoot = '',
 
+    [ValidatePattern('^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[a-z0-9]+)?$')]
+    [string]$PackageVersion = '2026.09.18-dev',
+
     [string]$GameDirectory = 'D:\gametest\steamapps\common\OnimushaWotS',
 
     [string]$NativeDll = '',
@@ -16,9 +19,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $workspaceRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot '..'))
-if (-not $OutputRoot) { $OutputRoot = Join-Path $workspaceRoot '_validation\releases\20260917' }
+if (-not $OutputRoot) { $OutputRoot = Join-Path $repoRoot 'release' }
 $outputPath = [IO.Path]::GetFullPath($OutputRoot)
-$packageName = 'OWOTS-Wardrobe-2026.09.17'
+$packageName = "OWOTS-Wardrobe-$PackageVersion"
 $staging = Join-Path $outputPath $packageName
 $zipPath = Join-Path $outputPath "$packageName.zip"
 $gamePath = [IO.Path]::GetFullPath($GameDirectory.TrimEnd('\', '/'))
@@ -160,7 +163,7 @@ $nativeDirtyFiles = @(& git -C (Join-Path $workspaceRoot 'REFramework-cn') statu
 $managedDirtyFiles = @(& git -C $repoRoot status --short)
 $manifest = [pscustomobject]@{
     schemaVersion = 1
-    packageVersion = '2026.09.17'
+    packageVersion = $PackageVersion
     createdUtc = (Get-Date).ToUniversalTime().ToString('o')
     game = 'OnimushaWotS'
     source = [pscustomobject]@{

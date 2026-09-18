@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace OWOTS.Appearance;
 
@@ -9,7 +10,8 @@ namespace OWOTS.Appearance;
 public enum WardrobeCategory { Body, Cloak, Gauntlet, Weapon }
 public sealed record WardrobeRuleEntry(string Id, WardrobeCategory Category,
     IReadOnlyList<string> ProvidedParts, IReadOnlyList<string> HiddenParts,
-    IReadOnlyList<WardrobeCategory> IncompatibleCategories);
+    IReadOnlyList<WardrobeCategory> IncompatibleCategories,
+    IReadOnlyDictionary<WardrobeCategory, string>? Equip = null);
 public sealed record WardrobeCompositionResult(
     IReadOnlyDictionary<WardrobeCategory, string?> Requested,
     IReadOnlyDictionary<WardrobeCategory, string> Effective,
@@ -108,5 +110,16 @@ public static class WardrobeComposition
             throw new ArgumentException("Unknown hidden part or entry hides its own resource");
         if (entry.IncompatibleCategories.Any(category => !CategoryParts.ContainsKey(category) || category == entry.Category))
             throw new ArgumentException("Invalid incompatible category");
+        if (entry.Equip != null) {
+            if (entry.Category != WardrobeCategory.Body) throw new ArgumentException("Only body can declare accessory equip");
+            foreach (var pair in entry.Equip) {
+                if (pair.Key is not (WardrobeCategory.Cloak or WardrobeCategory.Gauntlet) ||
+                    pair.Value == null || !Regex.IsMatch(pair.Value, "^[a-z0-9][a-z0-9._-]{0,127}$") ||
+                    pair.Value == entry.Id || pair.Value.StartsWith("runtime.wardrobe.", StringComparison.Ordinal))
+                    throw new ArgumentException("Invalid declared accessory reference");
+                if (entry.IncompatibleCategories.Contains(pair.Key) || entry.HiddenParts.Any(CategoryParts[pair.Key].Contains))
+                    throw new ArgumentException("Cannot equip and hide the same accessory category");
+            }
+        }
     }
 }

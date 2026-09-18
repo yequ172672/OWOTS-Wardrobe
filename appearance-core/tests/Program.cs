@@ -228,6 +228,7 @@ Console.WriteLine("PASS: sidecar round-trip, independent cancellation, key isola
 WardrobeCompositionTests.Run();
 WardrobeRegistryTests.Run();
 WardrobeSkeletonTests.Run();
+WardrobeEquipTests.Run();
 var v2 = """{"schemaVersion":2,"id":"test.body","name":"合并模型","category":"body","parts":[{"part":"BODY","catalog":"mods/test/catalog.user","prefab":"mods/test/body.pfb"}],"rules":{"hideParts":["HEAD","HAIR"],"incompatibleCategories":["cloak","gauntlet"]}}""";
 var parsedV2 = WardrobeManifest.Parse(v2, "test");
 Require(parsedV2.Rules.HiddenParts.Count == 2 && parsedV2.Rules.IncompatibleCategories.Count == 2,
@@ -245,7 +246,7 @@ Console.WriteLine("PASS: v2 declarations, rule typos, self-hide, path escape, ca
 foreach (string path in args)
 {
     using var fixture = JsonDocument.Parse(File.ReadAllText(path));
-    if (fixture.RootElement.GetProperty("schemaVersion").GetInt32() == 2)
+    if (fixture.RootElement.GetProperty("schemaVersion").GetInt32() is 2 or 3)
     {
         var actualV2 = WardrobeManifest.Parse(File.ReadAllText(path), path);
         Require(actualV2.Parts.Count > 0, "V2 fixture contains no parts");

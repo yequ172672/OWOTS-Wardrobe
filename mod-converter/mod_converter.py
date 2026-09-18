@@ -73,11 +73,12 @@ def T(zh: str, en: str) -> str:
     return zh if CHINESE_UI else en
 
 
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "2026.09.18-dev4"
 SCHEMA_VERSION = 2
 KNOWN_EXTENSIONS = (
     ".pfb", ".user", ".mdf2", ".mesh", ".tex", ".mmi", ".mpi",
     ".jcns", ".chain2", ".motbank", ".motlist", ".fbxskel",
+    ".mmtr", ".gpuc", ".clsp", ".sfur", ".jmap", ".jntexprgraph",
 )
 MAX_PAK_ENTRY_BYTES = 512 * 1024 * 1024
 MAX_PAK_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
@@ -488,12 +489,14 @@ def _quaternion_matches(left: Sequence[float], right: Sequence[float],
 
 
 def compare_actor_skeleton_to_baseline(source: FbxSkelInfo, baseline: FbxSkelInfo,
-                                       source_name: str = "source") -> None:
+                                       source_name: str = "source", *,
+                                       allow_rotation_difference: bool = False) -> None:
     """Require v1 topology and rest orientation to match the stock actor.
 
     Position differences are intentional: they are the measured independent
-    body shape that the runtime applies.  Rotation/scale differences would
-    require animation retargeting and are therefore outside v1.
+    body shape that the runtime applies. Rotation differences can be checked
+    separately when selecting mesh-embedded rest instead of importing rig data.
+    Scale and topology validation still apply in that case.
     """
     if baseline.bone_count != ACTOR_SKELETON_BONE_COUNT:
         raise ValueError(
@@ -521,7 +524,7 @@ def compare_actor_skeleton_to_baseline(source: FbxSkelInfo, baseline: FbxSkelInf
                 (symmetry == -1 and expected == index)):
             raise ValueError(f"{source_name} symmetry mapping differs from baseline at index {index}")
     for index, (rotation, expected) in enumerate(zip(source.rotations, baseline.rotations)):
-        if not _quaternion_matches(rotation, expected):
+        if not allow_rotation_difference and not _quaternion_matches(rotation, expected):
             raise ValueError(f"{source_name} rotation differs from baseline at index {index}")
     for index, (scale, expected) in enumerate(zip(source.scales, baseline.scales)):
         if not _float_tuple_matches(scale, expected):
@@ -555,7 +558,13 @@ class SourceFiles:
             self.report.error("INPUT_PATH_ESCAPE", T("输入目录含有指向目录外的 junction/链接，已拒绝", "Input directory contains a junction/link pointing outside it; rejected"), relative)
             return
         try:
-            normalized = strip_native_prefix(relative)
+            # Packaging folders are outside the engine namespace. Resolve the
+            # explicit natives/stm root before indexing, including streaming.
+            components = relative.replace("\\", "/").split("/")
+            native_root = next((index for index in range(len(components) - 1)
+                                if components[index].casefold() == "natives"
+                                and components[index + 1].casefold() == "stm"), None)
+            normalized = "/".join(components[native_root + 2:]) if native_root is not None else strip_native_prefix(relative)
             logical, version, streaming = split_versioned(normalized)
         except ValueError:
             self.other_files.append(relative.replace("\\", "/"))
@@ -1657,9 +1666,9 @@ class Converter:
 
         The game reference is consulted explicitly for the fixed stock /90
         rig.  A source file at the same logical path never becomes its own
-        baseline by accident.  Only the position vectors may differ in v1;
-        ordered names, parent/symmetry topology, rotations and scales must be
-        identical to the reference.
+        baseline by accident. A rotation-only mismatch in an unreferenced rig
+        selects the established mesh-rest contract; it does not import those
+        rotations or reinterpret the rig's positions as stock-oriented positions.
         """
         if not self.actor_skeleton_candidates:
             self._inspect_actor_skeleton_sources()
@@ -1696,7 +1705,8 @@ class Converter:
             baseline = parse_fbxskel(
                 baseline_asset.path.read_bytes(), ACTOR_SKELETON_BASELINE_RESOURCE
             )
-            compare_actor_skeleton_to_baseline(info, baseline, asset.logical)
+            compare_actor_skeleton_to_baseline(info, baseline, asset.logical,
+                                               allow_rotation_difference=True)
         except (OSError, ValueError) as error:
             code = self._actor_skeleton_issue_code(error) if isinstance(error, ValueError) else "ACTOR_SKELETON_BASELINE_INVALID"
             self.report.error(
@@ -1713,6 +1723,38 @@ class Converter:
                 "ACTOR_SKELETON_BODY_MESH_REQUIRED",
                 T("独立骨架必须和所选 BODY PFB 依赖图中的 MOD-owned mesh 一起发布，不能猜测身体资源。", "A standalone rig must be published together with the MOD-owned mesh in the selected BODY PFB dependency graph; body resources cannot be guessed."),
                 asset.logical,
+            )
+            return
+        changed_rotations = [name for name, rotation, expected in
+                             zip(info.names, info.rotations, baseline.rotations)
+                             if not _quaternion_matches(rotation, expected)]
+        if changed_rotations:
+            referenced = any(asset.logical.casefold() == dependency.casefold()
+                             for node in self.nodes.values() for dependency in node.dependencies)
+            if referenced:
+                self.report.error(
+                    "ACTOR_SKELETON_TRANSFORM_UNSUPPORTED",
+                    T("模型直接引用了旋转不同的独立骨架，无法改用模型内的体型数据。",
+                      "A model directly references the rotated standalone rig; mesh-rest fallback cannot replace it."),
+                    asset.logical,
+                )
+                return
+            self.pruned_actor_skeletons.add(asset.logical.casefold())
+            self.actor_skeleton_candidates = []
+            self.actor_skeleton_keys.discard(asset.logical.casefold())
+            self.report.stats["actorSkeletonFallbacks"] = [{
+                "source": asset.logical, "sourceSha256": info.sha256,
+                "fallback": "mesh-embedded-rest", "bodyMesh": body_mesh,
+                "changedRotationJoints": changed_rotations,
+                "jointNameOrderVerified": True, "parentHierarchyVerified": True,
+                "scaleVerified": True, "segmentScalingVerified": True,
+            }]
+            self.report.warn(
+                "ACTOR_SKELETON_ROTATION_MESH_FALLBACK",
+                T("已保留模型并使用模型内的体型数据；独立骨架的旋转未迁移，请进游戏测试。",
+                  "Kept the models and their embedded body shape; standalone rig rotations were not imported. Test in game."),
+                asset.logical, fallback="mesh-embedded-rest", bodyMesh=body_mesh,
+                changedRotationJoints=changed_rotations,
             )
             return
         self.actor_skeleton_asset = asset
@@ -2324,7 +2366,8 @@ class Converter:
         # points to a MOD-owned asset becomes independent by fixed point.
         required = {logical.casefold() for prefab, catalog, _id in self.part_roots.values()
                     for logical in ((prefab,) + ((catalog,) if catalog else ()))}
-        changed = {key for key, node in self.nodes.items() if node.asset.origin == "mod"}
+        changed = {key for key, node in self.nodes.items() if node.asset.origin == "mod" or
+                   (self.bundle and self.bundle.source.get(node.logical, True) is not None)}
         private = set(required) | changed
         while True:
             parents = {key for key, node in self.nodes.items()
@@ -2631,6 +2674,11 @@ class Converter:
         return derived, details
 
     def convert(self, output: Path) -> None:
+        self._check_output(output)
+        self.prepare()
+        self.publish(output)
+
+    def _check_output(self, output: Path) -> None:
         output = output.resolve()
         input_path = self.args.input.resolve()
         forbidden = [input_path]
@@ -2643,11 +2691,22 @@ class Converter:
                 raise ConversionError(T("输出目录不能与输入或只读参考目录相同/位于其中", "Output directory must not equal or be located inside the input or read-only reference directory"))
         if output.exists():
             raise ConversionError(T("输出目录已存在；为避免覆盖，请换一个新路径", "Output directory already exists; choose a new path to avoid overwriting"))
-        self.modinfo = parse_modinfo(self.args.input.resolve(), self.report) if self.args.input.is_dir() else None
-        self._prepare_game()
-        index = self._hash_index()
-        self.bundle = InputBundle(self.args.input, self.report, index)
-        self.bundle.load()
+    def prepare(self, *, bundle: InputBundle | None = None, game: GameReference | None = None) -> None:
+        """Resolve and validate a plan without writing its output package.
+
+        Batch callers own injected input/reference lifetimes. Each converter
+        retains its own graph, report and publication paths.
+        """
+        self.modinfo = (parse_modinfo(self.args.input.resolve(), self.report)
+                        if self.args.input.is_dir() and not getattr(self.args, "asset_only", False) else None)
+        if game is not None:
+            self.game = game
+        else:
+            self._prepare_game()
+        self.bundle = bundle
+        if self.bundle is None:
+            self.bundle = InputBundle(self.args.input, self.report, self._hash_index())
+            self.bundle.load()
         self._audit_dynamic_behavior()
         if self.report.errors:
             raise ConversionError(T("输入诊断存在阻止性错误；请先处理报告中的 error", "Input diagnostics contain blocking errors; resolve the errors in the report first"))
@@ -2663,6 +2722,10 @@ class Converter:
         self._audit_unconsumed_mod_assets()
         if self.report.errors:
             raise ConversionError(T("依赖图存在阻止性错误", "The dependency graph contains blocking errors"))
+
+    def publish(self, output: Path) -> None:
+        """Publish an already prepared graph using an atomic output directory."""
+        self._check_output(output)
         identity = safe_id(getattr(self.args, "mod_id", None) or
                            (self.modinfo.values.get("name") if self.modinfo else None) or self.args.input.stem)
         staging_parent = output.resolve().parent
@@ -2700,7 +2763,7 @@ class Converter:
                 # this preserves HQ textures and never mixes a MOD base with a
                 # game streaming tail.
                 if node.asset.extension == ".tex":
-                    companion = self.bundle.source.get(node.logical, True) if self.bundle and node.asset.origin == "mod" else None
+                    companion = self.bundle.source.get(node.logical, True) if self.bundle else None
                     if companion is None and self.game and node.asset.origin == "game":
                         companion = self.game.find(node.logical, True)
                     if companion:

@@ -156,6 +156,59 @@ class ConverterSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "segment scaling differs"):
             converter.compare_actor_skeleton_to_baseline(changed_segments, baseline)
 
+    def test_rotated_unreferenced_rig_uses_mesh_rest_without_importing_rig_positions(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/'input'
+            source.mkdir()
+            rig_path = source/'rig.fbxskel.7'
+            rotations = [(0.0, 0.0, 0.0, 1.0)] * 93
+            rotations[14] = (0.0, 0.70710678, 0.0, 0.70710678)
+            rig_path.write_bytes(self._fbxskel_bytes(rotations=rotations))
+            baseline_path = root/'baseline.fbxskel.7'
+            baseline_path.write_bytes(self._fbxskel_bytes())
+            baseline = converter.Asset(converter.ACTOR_SKELETON_BASELINE_RESOURCE,
+                '7', False, baseline_path, 'game', baseline_path.stat().st_size)
+            for case in ('rotation', 'rotation-and-scale', 'rotation-and-topology', 'referenced'):
+                with self.subTest(case=case):
+                    report = converter.Report('convert', source)
+                    args = converter.make_parser().parse_args(['convert', '--input', str(source),
+                        '--output', str(root/'out'), '--id', 'example', '--category', 'body'])
+                    instance = converter.Converter(args, report)
+                    instance.bundle = converter.InputBundle(source, report)
+                    instance.bundle.load()
+                    instance.game = SimpleNamespace(find=lambda *args: baseline)
+                    instance.part_roots = {'BODY': ('body.pfb', 'body.user', 1)}
+                    mesh_path = source/'body.mesh.260209350'
+                    mesh_path.write_bytes(b'authored body bytes')
+                    mesh = converter.Asset('art/mods/example/body.mesh', '260209350', False, mesh_path, 'mod', 19)
+                    deps = (mesh.logical, 'rig.fbxskel') if case == 'referenced' else (mesh.logical,)
+                    instance.nodes = {'body.pfb': converter.ResourceNode('body.pfb', mesh, deps),
+                                      mesh.logical: converter.ResourceNode(mesh.logical, mesh, ())}
+                    instance._inspect_actor_skeleton_sources()
+                    asset, info = instance.actor_skeleton_candidates[0]
+                    if case == 'rotation-and-scale':
+                        info = replace(info, scales=((2.0, 1.0, 1.0),) + info.scales[1:])
+                    if case == 'rotation-and-topology':
+                        info = replace(info, names=('different',) + info.names[1:])
+                    instance.actor_skeleton_candidates = [(asset, info)]
+                    instance._prepare_actor_skeleton()
+                    instance._prepare_mesh_actor_skeleton()
+                    if case != 'rotation':
+                        self.assertTrue(report.errors)
+                        self.assertFalse(instance.actor_skeleton_mesh_only)
+                        continue
+                    self.assertFalse(report.errors)
+                    self.assertTrue(instance.actor_skeleton_mesh_only)
+                    self.assertIn(asset.logical, instance.pruned_actor_skeletons)
+                    instance._compute_routes()
+                    manifest = instance._actor_skeleton_manifest('example')
+                    self.assertNotIn('resource', manifest)
+                    self.assertNotIn('bindPositions', manifest)
+                    self.assertEqual(report.stats['actorSkeletonFallbacks'][0]['changedRotationJoints'], ['Joint14'])
+                    self.assertEqual(rig_path.read_bytes(), self._fbxskel_bytes(rotations=rotations))
+
     def test_valid_actor_skeleton_is_private_and_published_in_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -43,8 +43,26 @@ public sealed class WardrobeSaveStore
             if (grant == null || !Accessory(grant.Category)) throw new FormatException("Invalid force grant");
             Id(grant.DeclaringId);
         }
+        WardrobeEquipState? equipment = null;
+        if (state.Equipment is { } source) {
+            Id(source.DeclaringBodyId);
+            if (source.PreviousSelections == null || source.Overridden == null || source.PreviousSelections.Count is < 1 or > 2 ||
+                state.Requested[WardrobeCategory.Body]?.EntryId != source.DeclaringBodyId ||
+                source.PreviousSelections.Keys.Any(category => !Accessory(category)) ||
+                source.Overridden.Distinct().Count() != source.Overridden.Count ||
+                source.Overridden.Any(category => !source.PreviousSelections.ContainsKey(category)))
+                throw new FormatException("Invalid saved accessory declaration source");
+            foreach (var previous in source.PreviousSelections.Values) {
+                if (previous == null) continue;
+                if ((previous.EntryId == null) == (previous.LegacyBundleId == null)) throw new FormatException("Invalid saved base accessory");
+                Id(previous.EntryId ?? previous.LegacyBundleId);
+            }
+            equipment = new(source.DeclaringBodyId,
+                new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(source.PreviousSelections.ToDictionary(pair => pair.Key, pair => pair.Value)),
+                Array.AsReadOnly(source.Overridden.ToArray()));
+        }
         return new(new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(state.Requested.ToDictionary(pair => pair.Key, pair => pair.Value)),
-            new(Array.AsReadOnly(state.Visibility.Disabled.ToArray()), Array.AsReadOnly(state.Visibility.ConfirmedOverrides.ToArray())));
+            new(Array.AsReadOnly(state.Visibility.Disabled.ToArray()), Array.AsReadOnly(state.Visibility.ConfirmedOverrides.ToArray())), equipment);
     }
 
     public WardrobeSaveRead Read(AppearanceSaveKey key)
@@ -60,9 +78,10 @@ public sealed class WardrobeSaveStore
                 if (old?.Key != key || old.Choices == null) throw new FormatException("Legacy save identity mismatch");
                 return new(new(2, key, Freeze(WardrobeSelections.FromLegacy(old.Choices))), null, true);
             }
-            if (version != 2) throw new FormatException("Unsupported wardrobe save version");
+            if (version is not (2 or 3)) throw new FormatException("Unsupported wardrobe save version");
             var record = JsonSerializer.Deserialize<WardrobeSaveRecord>(bytes, Options);
             if (record?.Key != key || record.Choices == null) throw new FormatException("Wardrobe save identity mismatch");
+            if (version == 2 && record.Choices.Equipment != null) throw new FormatException("Declared equip state requires save version 3");
             return new(record with { Choices = Freeze(record.Choices) }, null);
         } catch (FileNotFoundException) { return new(null, null); }
         catch (DirectoryNotFoundException) { return new(null, null); }
@@ -82,10 +101,16 @@ public sealed class WardrobeSaveStore
             var backup = path + ".v1." + Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant() + ".bak";
             if (!File.Exists(backup)) File.Copy(path, backup);
         }
+        int version = snapshot.Equipment == null ? 2 : 3;
+        if (version == 3 && existing.Record?.SchemaVersion == 2 && !existing.MigratedLegacy) {
+            var original = File.ReadAllBytes(path);
+            var backup = path + ".v2." + Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant() + ".bak";
+            if (!File.Exists(backup)) File.Copy(path, backup);
+        }
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
-                stream.Write(JsonSerializer.SerializeToUtf8Bytes(new WardrobeSaveRecord(2, key, snapshot), Options));
+                stream.Write(JsonSerializer.SerializeToUtf8Bytes(new WardrobeSaveRecord(version, key, snapshot), Options));
                 stream.Flush(true);
             }
             File.Move(temporary, path, true);

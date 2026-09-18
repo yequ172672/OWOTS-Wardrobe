@@ -1,814 +1,486 @@
-﻿#!/usr/bin/env python3
-"""Small Chinese Tkinter front end for the portable MOD converter.
-
-The GUI deliberately delegates all decisions and validation to
-``mod_converter.py``.  A worker thread keeps large PAK scans responsive, while
-the report pane shows the same machine-readable diagnostics a CLI user gets.
-All fields have visible labels and keyboard focus order; errors are rendered
-with a text prefix as well as color so status is not color-only.
-"""
-
+"""Player UI; conversion decisions and resource reports belong to batch_converter."""
 from __future__ import annotations
-
-import argparse
 import contextlib
 import io
 import json
-import locale
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
-
-import mod_converter
-import warnings
-
-
-def _chinese_system() -> bool:
-    """Best-effort system-language detection; unknown locales fall back to English."""
-    candidates = []
-    try:
-        candidates.append(locale.getlocale()[0])
-    except (ValueError, TypeError):
-        pass
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                candidates.append(locale.getdefaultlocale()[0])
-    except (ValueError, TypeError, AttributeError):
-        pass
-    candidates.append(os.environ.get("LANG"))
-    candidates.append(os.environ.get("LANGUAGE"))
-    for value in candidates:
-        if value and str(value).lower().replace("-", "_").startswith(("zh", "chinese")):
-            return True
-    return False
+from tkinterdnd2 import DND_FILES, TkinterDnD
+from batch_converter import BatchConverter
+from mod_converter import T
 
 
-# Auto-detected interface language: Chinese systems get Chinese, everything else English.
-CHINESE_UI = _chinese_system()
+def describe_error(error):
+    code = getattr(error, 'code', '')
+    if code.startswith('ACTOR_SKELETON_'):
+        return T('这个 Mod 修改了角色骨架，超出当前服装系统的支持范围，无法完整转换。', 'This mod changes the actor skeleton beyond the wardrobe system’s supported scope.')
+    if code == 'ARCHIVE_READER_MISSING':
+        return T('解压组件缺失，请重新解压转换器。', 'The archive reader is missing. Extract the converter package again.')
+    if code == 'RSZ_TEMPLATE_CRC_OVERRIDE_REQUIRED' or code == 'RSZ_TEMPLATE_LAYOUT_MISMATCH':
+        return T('暂时无法读取这个 Mod 使用的配置格式。请保留原 Mod，等待转换器更新。', 'This mod uses a configuration format the converter cannot read yet.')
+    if code == 'RESOURCE_VERSION_UNSUPPORTED':
+        return T('这个 Mod 的资源版本暂不受支持。', 'This mod uses an unsupported resource version.')
+    return str(error)
 
 
-def T(zh: str, en: str) -> str:
-    """Localize a literal for the current interface language."""
-    return zh if CHINESE_UI else en
+def settings_path():
+    return Path(os.environ.get('LOCALAPPDATA', Path.home()/'.config'))/'OWOTS-ModConverter'/'settings.json'
 
 
-# Sentinel for the "auto" combo entries, localized for display but compared by identity.
-AUTO = T("自动", "Auto")
-
-
-def report_json(text: str) -> dict[str, object] | None:
-    """Recover the machine-readable report from mixed stdout/stderr output.
-
-    A blocked run writes its report to stderr after the worker's own log lines,
-    and the GUI merges both streams, so the JSON is not always at offset zero.
-    """
-    start = text.find("{")
-    while start != -1:
+def discover_game():
+    steam = []
+    if os.name == 'nt':
         try:
-            value = json.loads(text[start:])
-        except (ValueError, TypeError):
-            start = text.find("{", start + 1)
-            continue
-        return value if isinstance(value, dict) else None
-    return None
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as key:
+                steam.append(Path(winreg.QueryValueEx(key, 'SteamPath')[0]))
+        except OSError: pass
+    for base in (os.environ.get('ProgramFiles(x86)'), os.environ.get('ProgramFiles')):
+        if base: steam.append(Path(base)/'Steam')
+    libraries = list(steam)
+    for directory in steam:
+        manifest = directory/'steamapps/libraryfolders.vdf'
+        try:
+            if manifest.stat().st_size < 1024*1024:
+                libraries.extend(Path(path.replace('\\\\', '\\')) for path in re.findall(r'"path"\s*"([^"]+)"', manifest.read_text(encoding='utf-8')))
+        except OSError: pass
+    for directory in libraries:
+        game = directory/'steamapps/common/OnimushaWotS'
+        if any(game.glob('re_chunk_*.pak')): return str(game)
+    return ''
 
 
-def readable_report(output: str) -> str:
-    """Put actionable results before the many per-resource inventory records."""
-    value = report_json(output)
-    if value is None:
-        return output
-    status = value.get("status", "unknown")
-    labels = {"converted": T("转换完成", "Conversion completed"),
-              "inspected": T("只读检查完成", "Inspection completed"),
-              "blocked": T("已停止，需处理以下问题", "Stopped; resolve the following issues")}
-    lines = [labels.get(status, str(status)), ""]
-    urgent = [issue for issue in value.get("issues", []) if issue.get("severity") == "error"] if status == "blocked" else []
-    for issue in urgent:
-        lines += [f"[{issue.get('code', '')}] {issue.get('message', '')}", ""]
-    stats = value.get("stats", {})
-    if value.get("source"):
-        lines += [T("输入：", "Input: ") + value["source"], ""]
-    for field, label in (("inputAssets", T("输入资源", "Input assets")),
-                         ("graphNodes", T("依赖资源", "Dependency resources")),
-                         ("privateResources", T("独立资源", "Private resources")),
-                         ("sharedResources", T("复用游戏原始资源", "Reused game resources"))):
-        if field in stats:
-            lines.append(label + T("：", ": ") + str(stats[field]))
-    parts = stats.get("autoPartDependencyChecks", {})
-    if parts:
-        lines.append(T("已验证部位：", "Verified parts: ") + T("、", ", ").join(sorted(parts)))
-    for issue in value.get("issues", []):
-        if issue.get("code") == "MANIFEST_HIDE_PARTS_FROM_BODY_RULES":
-            details = issue.get("details", {})
-            derived = details.get("derived") or []
-            hidden = T("、", ", ").join(derived) if derived else T("无", "none")
-            lines.append(T("按原生体型可见性规则隐藏：", "Hidden by the native body visibility rules: ")
-                         + str(hidden) + f"  (bodyId={details.get('bodyId')})")
-            skipped = details.get("suppliedPartsNotHidden") or []
-            if skipped:
-                lines.append("  " + T("本条目已提供，故不隐藏：", "Provided by this entry, so not hidden: ")
-                             + T("、", ", ").join(skipped))
-    candidates = stats.get("nativePartCandidates", [])
-    if candidates:
-        lines += ["", T("原生部位候选（可用高级选项里的“部位计划”精确选择，不要合并变体）：",
-                        "Native part candidates (select precisely with the advanced parts plan; never merge variants):")]
-        for entry in candidates:
-            for row in entry.get("candidates", []):
-                lines.append(f"  {entry.get('part', '')}  nativeId={row.get('nativeId')}  "
-                             f"{row.get('variant', '')}  {row.get('prefab', '')}")
-    pruned = stats.get("prunedModResources", [])
-    if pruned:
-        lines.append(T("已按“排除不可达资源”排除：", "Excluded by prune-unreachable: ") + str(len(pruned)))
-    for item in stats.get("texturePromotions", []):
-        if item.get("promoted"):
-            dimensions = item.get("streamingResolution", [])
-            lines.append(T("高清纹理：", "High-res texture: ") + " × ".join(map(str, dimensions))
-                         + T("，已完整保留", ", fully preserved"))
-    issues = value.get("issues", [])
-    for severity, label in (("error", T("错误", "Error")), ("warning", T("注意", "Notice"))):
-        if severity == "error" and urgent:
-            continue
-        selected = [issue for issue in issues if issue.get("severity") == severity]
-        if selected:
-            lines += ["", label + T("（", " (") + str(len(selected)) + T("）：", "): ")]
-        for issue in selected:
-            lines.append(f"[{issue.get('code', '')}] {issue.get('message', '')}")
-            if issue.get("path"):
-                lines.append("  " + issue["path"])
-    if status == "converted":
-        lines += ["", T("完整诊断保存在输出目录的 conversion-report.json 和 CONVERSION-REPORT.md。",
-                        "Full diagnostics are saved as conversion-report.json and CONVERSION-REPORT.md in the output folder.")]
-    elif status == "inspected":
-        lines += ["", T("此步骤只检查输入；点击“开始转换”后才会从游戏读取依赖并验证完整转换。",
-                        "This step only inspects the input; dependencies and the full conversion are verified after you click Start conversion.")]
-    if stats.get("blockedReport"):
-        lines += ["", T("诊断目录：", "Diagnostics folder: ") + stats["blockedReport"]]
-    return "\n".join(lines)
-
-
-class ConverterWindow:
-    BG = "#121212"
-    PANEL = "#1d1f24"
-    TEXT = "#f2f4f7"
-    MUTED = "#b8c0cc"
-    ACCENT = "#56b4ff"
-    ERROR = "#ff8d8d"
-    OK = "#8cdaa5"
-
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        root.title(T("OWOTS 衣橱 MOD 转换器", "OWOTS Wardrobe MOD Converter"))
-        root.geometry("900x680")
-        root.minsize(760, 560)
-        root.configure(bg=self.BG)
-        root.option_add("*Font", ("Segoe UI", 10))
-        root.option_add("*Foreground", self.TEXT)
-        root.option_add("*Background", self.PANEL)
-        root.option_add("*Entry.InsertBackground", self.TEXT)
-        root.option_add("*Entry.InsertForeground", self.TEXT)
-        root.option_add("*TCombobox*Listbox*Background", self.PANEL)
-        root.option_add("*TCombobox*Listbox*Foreground", self.TEXT)
-        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
-        self.busy = False
-        self.vars = {name: tk.StringVar() for name in
-                     ("input", "output", "game", "prefab", "catalog", "native", "id")}
-        self.category = tk.StringVar(value=AUTO)
-        self.part = tk.StringVar(value=AUTO)
-        self.allow_crc = tk.BooleanVar(value=False)
-        self.static_only = tk.BooleanVar(value=False)
-        self.prune_unreachable = tk.BooleanVar(value=False)
-        self.body_rule_hides = tk.BooleanVar(value=True)
-        self.advanced_visible = False
-        self.advanced_window: tk.Toplevel | None = None
-        # Explicit parts plan (BODY + HEAD + HAIR in one entry) and declared
-        # hidden parts; both are needed far more often than the CLI implies.
-        self.plan_rows: list[dict[str, str]] = []
-        self.plan_window: tk.Toplevel | None = None
-        self.plan_tree: ttk.Treeview | None = None
-        self.plan_summary: tk.Label | None = None
-        self.hide_list: tk.Listbox | None = None
-        self.hide_parts: list[str] = []
-        self.plan_files: list[str] = []
-        self.last_report: dict[str, object] | None = None
-        self.last_output: str = ""
-        self.open_output_button: ttk.Button | None = None
+class App:
+    def __init__(self, root, *, configuration=None, engine=BatchConverter):
+        self.root, self.engine = root, engine
+        self.configuration = configuration or settings_path()
+        self.events, self.pending, self.rows = queue.Queue(), [], {}
+        self.busy, self.closing = False, False
+        self.cancelled = threading.Event()
+        self.detail_windows = set()
+        self.poll_id = None
+        try:
+            values = json.loads(self.configuration.read_text(encoding='utf-8'))
+            if not isinstance(values, dict): values = {}
+        except (OSError, ValueError): values = {}
+        self.game = tk.StringVar(root, str(values.get('game', '')) or discover_game())
+        output = str(values.get('output', ''))
+        if values.get('version', 1) == 1 and output == str(Path.home()/'Documents'/'OWOTS Mods'):
+            output = ''
+        self.output = tk.StringVar(root, output)
+        self.status, self.directory_error = tk.StringVar(root), tk.StringVar(root)
         self._build()
-        self.root.after(100, self._drain)
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        root.bind('<Control-o>', lambda _: self.choose_files())
+        root.bind('<Escape>', lambda _: self.cancel())
+        self.poll_id = root.after(80, self._poll)
 
-    def _build(self) -> None:
-        outer = ttk.Frame(self.root, padding=20)
-        outer.pack(fill="both", expand=True)
-        title = tk.Label(outer, text=T("OWOTS 普通 MOD → 独立衣橱 MOD", "OWOTS normal MOD → standalone wardrobe MOD"), anchor="w",
-                         bg=self.BG, fg=self.TEXT, font=("Segoe UI", 17, "bold"))
-        title.pack(fill="x")
-        subtitle = tk.Label(outer, text=T("支持松散目录和普通 KPKA PAK。原始游戏目录只读参考，不会被修改。", "Supports loose folders and plain KPKA PAKs. The original game directory is read-only and is never modified."),
-                            anchor="w", bg=self.BG, fg=self.MUTED, font=("Segoe UI", 10))
-        subtitle.pack(fill="x", pady=(4, 16))
+    def _build(self):
+        root = self.root
+        root.title(T('鬼武者 · Mod 转换器', 'Onimusha · Mod Converter'))
+        root.geometry('860x640')
+        root.minsize(700, 580)
+        root.configure(bg='#f5f6f8')
+        style = ttk.Style(root)
+        style.theme_use('clam')
+        style.configure('.', font=('Microsoft YaHei UI', 10), foreground='#1f2937', background='#f5f6f8')
+        style.configure('TButton', padding=(14, 9), background='#ffffff', borderwidth=1)
+        style.map('TButton', background=[('active', '#e9eef5'), ('disabled', '#edf0f3')])
+        style.configure('Primary.TButton', foreground='#ffffff', background='#235db6', borderwidth=0)
+        style.map('Primary.TButton', background=[('active', '#18488f'), ('disabled', '#91a6c5')])
+        style.configure('TEntry', padding=8, fieldbackground='#ffffff')
+        style.configure('Treeview', rowheight=38, background='#ffffff', fieldbackground='#ffffff', borderwidth=0)
+        style.configure('Treeview.Heading', font=('Microsoft YaHei UI', 10, 'bold'), padding=9, background='#eef1f5')
+        style.map('Treeview', background=[('selected', '#deebff')], foreground=[('selected', '#173a6a')])
+        outer = ttk.Frame(root, padding=20)
+        outer.pack(fill='both', expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(5, weight=1)
+        ttk.Label(outer, text=T('Mod 转换器', 'Mod Converter'), font=('Microsoft YaHei UI', 22, 'bold')).grid(row=0, column=0, sticky='w', pady=(0, 12))
+        directories = ttk.Frame(outer)
+        directories.grid(row=1, column=0, sticky='ew')
+        directories.columnconfigure(1, weight=1)
+        self.directory_controls = []
+        for row, (text, variable) in enumerate(((T('游戏目录', 'Game folder'), self.game), (T('输出目录（可选）', 'Output folder (optional)'), self.output))):
+            ttk.Label(directories, text=text).grid(row=row, column=0, sticky='w', padx=(0, 14), pady=5)
+            entry = ttk.Entry(directories, textvariable=variable)
+            entry.grid(row=row, column=1, sticky='ew', pady=5)
+            entry.bind('<FocusOut>', lambda _: self._directories_changed())
+            entry.bind('<Return>', lambda _: self._directories_changed())
+            button = ttk.Button(directories, text=T('选择…', 'Browse…'), command=lambda v=variable: self.choose_directory(v))
+            button.grid(row=row, column=2, padx=(10, 0), pady=5)
+            self.directory_controls.extend((entry, button))
+        ttk.Label(outer, textvariable=self.directory_error, foreground='#a32924').grid(row=2, column=0, sticky='w')
+        self.drop = tk.Frame(outer, bg='#ffffff', highlightbackground='#b8c6d9', highlightthickness=1, height=124)
+        self.drop.grid(row=3, column=0, sticky='ew', pady=(8, 12))
+        self.drop.pack_propagate(False)
+        prompt = tk.Label(self.drop, text=T('把 Mod 拖到这里', 'Drop your mods here'), bg='#ffffff', fg='#253b5b', font=('Microsoft YaHei UI', 16, 'bold'))
+        prompt.pack(pady=(15, 12))
+        choices = tk.Frame(self.drop, bg='#ffffff')
+        choices.pack()
+        ttk.Button(choices, text=T('选择文件', 'Choose files'), style='Primary.TButton', command=self.choose_files).pack(side='left', padx=5)
+        ttk.Button(choices, text=T('选择文件夹', 'Choose folder'), command=self.choose_folder).pack(side='left', padx=5)
+        for target in (root, self.drop, prompt):
+            target.drop_target_register(DND_FILES)
+            target.dnd_bind('<<Drop>>', self.on_drop)
+        result_bar = ttk.Frame(outer)
+        result_bar.grid(row=4, column=0, sticky='ew', pady=(0, 8))
+        ttk.Label(result_bar, text=T('转换结果', 'Results'), font=('Microsoft YaHei UI', 11, 'bold')).pack(side='left')
+        self.clear_button = ttk.Button(result_bar, text=T('清空', 'Clear'), command=self.clear)
+        self.clear_button.pack(side='right')
+        tree_frame = ttk.Frame(outer)
+        tree_frame.grid(row=5, column=0, sticky='nsew')
+        self.tree = ttk.Treeview(tree_frame, columns=('name', 'result'), show='headings', selectmode='browse', height=1)
+        self.tree.heading('name', text='Mod')
+        self.tree.heading('result', text=T('结果', 'Result'))
+        self.tree.column('name', width=440, minwidth=200)
+        self.tree.column('result', width=210, minwidth=180, stretch=False)
+        scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        self.tree.bind('<<TreeviewSelect>>', lambda _: self._selection_changed())
+        self.tree.bind('<Double-1>', lambda _: self.show_details())
+        self.tree.bind('<Return>', lambda _: self.show_details())
+        self.tree.tag_configure('error', foreground='#a32924')
+        self.tree.tag_configure('warning', foreground='#86520b')
+        self.progress = ttk.Progressbar(outer, mode='indeterminate')
+        self.progress.grid(row=6, column=0, sticky='ew', pady=(10, 9))
+        self.progress.grid_remove()
+        bottom = ttk.Frame(outer)
+        bottom.grid(row=7, column=0, sticky='ew', pady=(12, 0))
+        ttk.Label(bottom, textvariable=self.status).pack(side='left')
+        self.open_button = ttk.Button(bottom, text=T('打开位置', 'Open folder'), command=self.open_result, state='disabled')
+        self.open_button.pack(side='right')
+        self.details_button = ttk.Button(bottom, text=T('查看', 'View'), command=self.show_details, state='disabled')
+        self.details_button.pack(side='right', padx=8)
+        self.cancel_button = ttk.Button(bottom, text=T('取消', 'Cancel'), command=self.cancel, state='disabled')
+        self.cancel_button.pack(side='right')
 
-        form = ttk.Frame(outer)
-        form.pack(fill="x")
-        self._path_row(form, 0, T("输入 MOD", "Input MOD"), "input", T("选择 MOD 文件夹或 .pak", "Choose a MOD folder or a .pak"), False)
-        self._path_row(form, 1, T("输出目录", "Output folder"), "output", T("浏览时选择父目录，工具会建议新的子目录", "Pick a parent folder; a new subfolder is suggested"), True)
-        self._path_row(form, 2, T("游戏原始安装目录", "Original game install"), "game", T("可选：Steam 游戏根目录（只读按需解包）", "Optional: Steam game root (read-only, unpacked on demand)"), False)
+    def choose_directory(self, variable):
+        path = filedialog.askdirectory(parent=self.root, initialdir=variable.get() or None)
+        if path:
+            variable.set(path)
+            self._directories_changed()
 
-        basic = ttk.LabelFrame(outer, text=T("自动识别", "Auto-detect"), padding=10)
-        basic.pack(fill="x", pady=(12, 0))
-        self._labeled_combo(basic, 0, T("分类（可选）", "Category (optional)"), self.category,
-                            (AUTO, "body", "cloak", "gauntlet", "weapon"), 28)
-        ttk.Label(basic, text=T("普通 MOD 通常留“自动”；工具会按资源依赖选择 BODY/HEAD/HAIR 或武器部位。", "Normal MODs usually stay on Auto; the tool picks BODY/HEAD/HAIR or weapon parts from resource dependencies."),
-                  foreground=self.MUTED).grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+    def choose_files(self):
+        self.add_inputs(filedialog.askopenfilenames(parent=self.root, filetypes=[(T('Mod 文件', 'Mod files'), '*.zip *.rar *.7z *.pak')]))
 
-        self.advanced_toggle = ttk.Button(outer, text=T("显示高级选项 ▸", "Show advanced options ▸"), command=self._toggle_advanced)
-        self.advanced_toggle.pack(fill="x", pady=(8, 0))
+    def choose_folder(self):
+        path = filedialog.askdirectory(parent=self.root)
+        if path: self.add_inputs([path])
 
-        actions = ttk.Frame(outer)
-        actions.pack(fill="x", pady=(16, 8))
-        self.inspect_button = ttk.Button(actions, text=T("只读检查", "Inspect (read-only)"), command=self.inspect)
-        self.inspect_button.pack(side="left", padx=(0, 8), ipadx=12, ipady=4)
-        self.convert_button = ttk.Button(actions, text=T("开始转换", "Start conversion"), command=self.convert)
-        self.convert_button.pack(side="left", ipadx=12, ipady=4)
-        self.open_output_button = ttk.Button(actions, text=T("打开输出目录", "Open output folder"),
-                                             command=self._open_output, state="disabled")
-        self.open_output_button.pack(side="left", padx=(8, 0), ipadx=10, ipady=4)
-        self.status = tk.Label(actions, text=T("状态：等待输入", "Status: waiting for input"), anchor="e", bg=self.BG, fg=self.MUTED)
-        self.status.pack(side="right", fill="x", expand=True)
+    def on_drop(self, event):
+        try: paths = self.root.tk.splitlist(event.data)
+        except tk.TclError: return 'none'
+        self.add_inputs(paths)
+        return 'copy'
 
-        report_frame = ttk.LabelFrame(outer, text=T("诊断报告", "Diagnostics"), padding=8)
-        report_frame.pack(fill="both", expand=True, pady=(4, 0))
-        self.report = tk.Text(report_frame, wrap="word", height=12, state="disabled",
-                              bg="#0d0f12", fg=self.TEXT, insertbackground=self.TEXT,
-                              relief="flat", padx=10, pady=10)
-        scrollbar = ttk.Scrollbar(report_frame, orient="vertical", command=self.report.yview)
-        self.report.configure(yscrollcommand=scrollbar.set)
-        self.report.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        self.root.bind("<Return>", lambda _event: self.convert() if not self.busy else None)
-
-    def _release_advanced_widgets(self) -> None:
-        """Drop references to widgets owned by the destroyed advanced window."""
-        self.plan_summary = None
-        self.hide_list = None
-
-    def _toggle_advanced(self) -> None:
-        if self.advanced_window is not None and self.advanced_window.winfo_exists():
-            self.advanced_window.destroy()
-            self.advanced_window = None
-            self.advanced_visible = False
-            self._release_advanced_widgets()
-            self.advanced_toggle.configure(text=T("显示高级选项 ▸", "Show advanced options ▸"))
-            return
-        window = self.advanced_window = tk.Toplevel(self.root)
-        self.advanced_visible = True
-        window.title(T("OWOTS 衣橱转换器 · 高级选项", "OWOTS Wardrobe Converter · Advanced"))
-        window.geometry("760x600")
-        window.minsize(660, 520)
-        window.configure(bg=self.BG)
-        window.transient(self.root)
-        options = ttk.LabelFrame(window, text=T("高级衣橱配置", "Advanced wardrobe configuration"), padding=12)
-        options.pack(fill="both", expand=True, padx=12, pady=12)
-        plan_frame = ttk.LabelFrame(options, text=T("部位计划（可选，多部位条目用）", "Parts plan (optional, for multi-part entries)"), padding=8)
-        plan_frame.grid(row=0, column=0, columnspan=3, sticky="ew")
-        self.plan_summary = tk.Label(plan_frame, anchor="w", bg=self.PANEL, fg=self.MUTED)
-        self.plan_summary.pack(side="left", fill="x", expand=True)
-        ttk.Button(plan_frame, text=T("编辑部位计划…", "Edit parts plan…"),
-                   command=self._open_plan_window).pack(side="right")
-        self._labeled_combo(options, 1, T("部位（可选）", "Part (optional)"), self.part,
-                            (AUTO, "BODY", "BODY_SUB", "HEAD", "HAIR", "CLOAK", "GAUNTLET",
-                             "WEAPON", "SHEATH", "WEAPON_SUB", "SHEATH_SUB", "BOW"), 28)
-        self._text_row(options, 2, "MOD ID", "id", T("例如 scarlet.hat；留空自动生成", "e.g. scarlet.hat; blank auto-generates"))
-        self._text_row(options, 3, T("原始 PFB", "Source PFB"), "prefab", T("mesh MOD 没有 PFB 时填写逻辑路径", "Logical path when a mesh MOD has no PFB"))
-        self._text_row(options, 4, T("原始 catalog", "Source catalog"), "catalog", T("PlayerPartsList USER 逻辑路径", "PlayerPartsList USER logical path"))
-        self._text_row(options, 5, T("原生 ID", "Native ID"), "native", T("目录多行时用于精确选择", "Used to pick the exact row when the catalog has several"))
-        hide_frame = ttk.LabelFrame(options, text=T("隐藏原生部位（可选）", "Hide native parts (optional)"), padding=8)
-        hide_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        self.hide_list = tk.Listbox(hide_frame, selectmode="multiple", height=5, exportselection=False,
-                                    bg="#0d0f12", fg=self.TEXT, relief="flat",
-                                    selectbackground=self.ACCENT, highlightthickness=0)
-        for part_name in sorted(mod_converter.ALL_PARTS):
-            self.hide_list.insert("end", part_name)
-        self.hide_list.pack(side="left", fill="x", expand=True)
-        self.hide_list.bind("<<ListboxSelect>>", lambda _event: self._sync_hide_parts())
-        ttk.Label(hide_frame, text=T("按住 Ctrl 多选；本条目已提供的部位不会被隐藏",
-                                     "Ctrl-click to pick several; a part this entry provides is never hidden"),
-                  foreground=self.MUTED, wraplength=220, justify="left").pack(side="left", padx=(10, 0))
-        check = ttk.Checkbutton(options, text=T("实验：允许已报告 CRC mismatch 的结构化资源写回（报告会标记）", "Experimental: allow structured-resource write-back reported as CRC mismatch (flagged in the report)"),
-                                variable=self.allow_crc)
-        check.grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 0))
-        static_check = ttk.Checkbutton(
-            options,
-            text=T("实验：接受静态转换（省略 Lua/原生插件，动态行为不等价）", "Experimental: accept static conversion (Lua/native plugins omitted; dynamic behavior is not equivalent)"),
-            variable=self.static_only,
-        )
-        static_check.grid(row=8, column=0, columnspan=3, sticky="w", pady=(7, 0))
-        prune_check = ttk.Checkbutton(
-            options,
-            text=T("只发布所选部位可达的资源；其余逐条记录原因后排除（不可达独立骨架会让体型回退到 BODY mesh 内嵌休止）",
-                   "Publish only resources reachable from the selected parts; itemise and exclude the rest (an unreachable rig falls back to the BODY mesh embedded rest)"),
-            variable=self.prune_unreachable,
-        )
-        prune_check.grid(row=9, column=0, columnspan=3, sticky="w", pady=(7, 0))
-        body_rule_check = ttk.Checkbutton(
-            options,
-            text=T("按原生体型可见性规则自动写入隐藏部位（例如披风不可见的体型自动隐藏 CLOAK）",
-                   "Derive hidden parts from the native body visibility rules (e.g. a cloak-less body hides CLOAK)"),
-            variable=self.body_rule_hides,
-        )
-        body_rule_check.grid(row=10, column=0, columnspan=3, sticky="w", pady=(7, 0))
-        self._refresh_plan_summary()
-
-        def closed() -> None:
-            self.advanced_visible = False
-            self.advanced_window = None
-            self._release_advanced_widgets()
-            self.advanced_toggle.configure(text=T("显示高级选项 ▸", "Show advanced options ▸"))
-            window.destroy()
-
-        window.protocol("WM_DELETE_WINDOW", closed)
-        self.advanced_toggle.configure(text=T("关闭高级选项 ▾", "Hide advanced options ▾"))
-
-    def _sync_hide_parts(self) -> None:
-        """Keep the declared hidden parts across closing the advanced window."""
-        if self.hide_list is None or not self.hide_list.winfo_exists():
-            return
-        self.hide_parts = [self.hide_list.get(index) for index in self.hide_list.curselection()]
-
-    def _refresh_plan_summary(self) -> None:
-        label = self.plan_summary
-        if label is None or not label.winfo_exists():
-            return
-        if not self.plan_rows:
-            label.configure(text=T("未设置（使用单部位或自动识别）", "Not set (single part / auto-detect)"))
-            return
-        parts = T("、", ", ").join(str(row.get("part", "")) for row in self.plan_rows)
-        label.configure(text=T("当前计划：", "Current plan: ")
-                        + str(len(self.plan_rows)) + T(" 个部位 — ", " parts — ") + parts)
-
-    def _refresh_plan_tree(self) -> None:
-        tree = self.plan_tree
-        if tree is not None and tree.winfo_exists():
-            tree.delete(*tree.get_children())
-            for row in self.plan_rows:
-                tree.insert("", "end", values=(row.get("part", ""), row.get("nativeId", ""),
-                                               row.get("prefab", ""), row.get("catalog", "")))
-        self._refresh_plan_summary()
-
-    def _open_plan_window(self) -> None:
-        if self.plan_window is not None and self.plan_window.winfo_exists():
-            self.plan_window.lift()
-            return
-        window = self.plan_window = tk.Toplevel(self.root)
-        window.title(T("OWOTS 衣橱转换器 · 部位计划", "OWOTS Wardrobe Converter · Parts plan"))
-        window.geometry("880x440")
-        window.minsize(720, 380)
-        window.configure(bg=self.BG)
-        window.transient(self.root)
-        frame = ttk.LabelFrame(window, text=T("一个条目可同时提供同一分类的多个部位", "One entry may provide several parts of the same category"), padding=10)
-        frame.pack(fill="both", expand=True, padx=12, pady=(12, 6))
-        columns = ("part", "nativeId", "prefab", "catalog")
-        headings = {"part": T("部位", "Part"), "nativeId": "nativeId",
-                    "prefab": T("原始 PFB", "Source PFB"), "catalog": T("原始 catalog", "Source catalog")}
-        widths = {"part": 90, "nativeId": 80, "prefab": 340, "catalog": 320}
-        tree = self.plan_tree = ttk.Treeview(frame, columns=columns, show="headings", height=8, selectmode="extended")
-        for column in columns:
-            tree.heading(column, text=headings[column])
-            tree.column(column, width=widths[column], anchor="w", stretch=column in {"prefab", "catalog"})
-        tree.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        actions = ttk.Frame(window)
-        actions.pack(fill="x", padx=12, pady=(0, 6))
-        ttk.Button(actions, text=T("用高级选项的字段添加一行", "Add a row from the advanced fields"),
-                   command=self._plan_add_current).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text=T("从只读检查结果填入全部候选", "Fill every candidate from the last inspection"),
-                   command=self._plan_fill_from_report).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text=T("删除选中行", "Remove selected rows"),
-                   command=self._plan_remove_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text=T("清空", "Clear"), command=self._plan_clear).pack(side="left")
-        ttk.Label(window, text=T("提示：先点“只读检查”，再点“从只读检查结果填入全部候选”，然后删掉不需要的变体行。"
-                                 "同一计划只能属于一个分类，且与 PFB/catalog/原生 ID 字段互斥。",
-                                 "Tip: click Inspect first, then Fill every candidate, then remove the variants you do not want. "
-                                 "One plan must stay inside a single category and is mutually exclusive with the PFB/catalog/native-ID fields."),
-                  foreground=self.MUTED, wraplength=840, justify="left").pack(fill="x", padx=12, pady=(0, 10))
-
-        def closed() -> None:
-            self.plan_window = None
-            self.plan_tree = None
-            window.destroy()
-
-        window.protocol("WM_DELETE_WINDOW", closed)
-        self._refresh_plan_tree()
-
-    def _plan_add_current(self) -> None:
-        part = self.part.get().strip()
-        prefab = self.vars["prefab"].get().strip()
-        catalog = self.vars["catalog"].get().strip()
-        if part in ("", AUTO):
-            self._set_report(T("[错误] 请先在高级选项里选择“部位”，再添加计划行。",
-                               "[Error] Choose a Part in the advanced options before adding a plan row."))
-            return
-        if not prefab or not catalog:
-            self._set_report(T("[错误] 请先填写原始 PFB 与原始 catalog，再添加计划行。",
-                               "[Error] Fill in the source PFB and catalog before adding a plan row."))
-            return
-        self.plan_rows.append({"part": part.upper(), "prefab": prefab, "catalog": catalog,
-                               "nativeId": self.vars["native"].get().strip()})
-        self._refresh_plan_tree()
-
-    def _plan_fill_from_report(self) -> None:
-        report = self.last_report if isinstance(self.last_report, dict) else {}
-        stats = report.get("stats", {}) if isinstance(report, dict) else {}
-        candidates = stats.get("nativePartCandidates", []) if isinstance(stats, dict) else []
-        if not candidates:
-            self._set_report(T("[错误] 上一次“只读检查”没有原生部位候选；请先点“只读检查”。",
-                               "[Error] The last inspection produced no native part candidates; click Inspect first."))
-            return
-        rows: list[dict[str, str]] = []
-        for entry in candidates:
-            for row in entry.get("candidates", []):
-                rows.append({"part": str(entry.get("part", "")), "prefab": str(row.get("prefab", "")),
-                             "catalog": str(row.get("catalog", "")), "nativeId": str(row.get("nativeId", ""))})
-        self.plan_rows = rows
-        self._refresh_plan_tree()
-
-    def _plan_remove_selected(self) -> None:
-        tree = self.plan_tree
-        if tree is None or not tree.winfo_exists():
-            return
-        indices = sorted((tree.index(item) for item in tree.selection()), reverse=True)
-        for index in indices:
-            if 0 <= index < len(self.plan_rows):
-                del self.plan_rows[index]
-        self._refresh_plan_tree()
-
-    def _plan_clear(self) -> None:
-        self.plan_rows = []
-        self._refresh_plan_tree()
-
-    def _plan_payload(self) -> dict[str, list[dict[str, object]]] | None:
-        rows: list[dict[str, object]] = []
-        for row in self.plan_rows:
-            part = str(row.get("part", "")).strip().upper()
-            prefab = str(row.get("prefab", "")).strip()
-            catalog = str(row.get("catalog", "")).strip()
-            if not part or not prefab or not catalog:
-                continue
-            entry: dict[str, object] = {"part": part, "prefab": prefab, "catalog": catalog}
-            native = str(row.get("nativeId", "")).strip()
-            if native:
-                entry["nativeId"] = int(native)
-            rows.append(entry)
-        return {"parts": rows} if rows else None
-
-    def _write_plan_file(self, payload: dict[str, object]) -> str:
-        """Write the plan to a private temp file the CLI can read back."""
-        for stale in self.plan_files:
-            try:
-                os.unlink(stale)
-            except OSError:
-                pass
-        self.plan_files = []
-        handle, path = tempfile.mkstemp(prefix="owots-parts-plan-", suffix=".json")
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, ensure_ascii=False, indent=2)
-        self.plan_files.append(path)
-        return path
-
-    def _open_output(self) -> None:
-        path = self.last_output
-        if not path or not Path(path).is_dir():
-            return
+    def _directories_changed(self):
+        if self.busy: return
         try:
-            os.startfile(path)  # noqa: S606 - opening the folder the user chose
-        except (AttributeError, OSError) as error:
-            self._set_report(T("[错误] 无法打开输出目录：", "[Error] Could not open the output folder: ") + str(error))
-
-    def _path_row(self, parent: ttk.Frame, row: int, label: str, name: str,
-                  hint: str, save: bool) -> None:
-        ttk.Label(parent, text=label, width=14).grid(row=row, column=0, sticky="w", pady=5)
-        entry = ttk.Entry(parent, textvariable=self.vars[name])
-        entry.grid(row=row, column=1, sticky="ew", padx=(8, 8), pady=5, ipady=3)
-        if name == "input":
-            buttons = ttk.Frame(parent)
-            buttons.grid(row=row, column=2, padx=(0, 6), pady=3)
-            ttk.Button(buttons, text=T("选择 PAK", "Choose PAK"), command=self._browse_pak).pack(side="left", padx=(0, 4), ipady=2)
-            ttk.Button(buttons, text=T("选择文件夹", "Choose folder"), command=self._browse_input_directory).pack(side="left", ipady=2)
-        elif save:
-            ttk.Button(parent, text=T("选择父目录", "Choose parent folder"), command=self._browse_output).grid(row=row, column=2,
-                                                                                         padx=(0, 6), pady=5,
-                                                                                         ipadx=8, ipady=2)
-        else:
-            ttk.Button(parent, text=T("浏览…", "Browse…"), command=lambda: self._browse_directory(name)).grid(row=row, column=2,
-                                                                                                  padx=(0, 6), pady=5,
-                                                                                                  ipadx=8, ipady=2)
-        ttk.Label(parent, text=hint, foreground=self.MUTED).grid(row=row, column=3, sticky="w", pady=5)
-        parent.grid_columnconfigure(1, weight=1)
-
-    def _text_row(self, parent: ttk.Frame, row: int, label: str, name: str, hint: str) -> None:
-        ttk.Label(parent, text=label, width=14).grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Entry(parent, textvariable=self.vars[name]).grid(row=row, column=1, sticky="ew", padx=(8, 8),
-                                                              pady=4, ipady=2)
-        ttk.Label(parent, text=hint, foreground=self.MUTED).grid(row=row, column=2, sticky="w", pady=4)
-        parent.grid_columnconfigure(1, weight=1)
-
-    def _labeled_combo(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar,
-                       values: tuple[str, ...], width: int) -> None:
-        ttk.Label(parent, text=label, width=14).grid(row=row, column=0, sticky="w", pady=4)
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=width)
-        combo.grid(row=row, column=1, sticky="w", padx=(8, 8), pady=4, ipady=2)
-
-    def _browse_pak(self) -> None:
-        value = filedialog.askopenfilename(
-            title=T("选择普通 PAK MOD", "Choose a normal PAK MOD"),
-            filetypes=((T("PAK 文件", "PAK files"), "*.pak"), (T("所有文件", "All files"), "*.*")),
-        )
-        if value:
-            self.vars["input"].set(value)
-
-    def _browse_input_directory(self) -> None:
-        value = filedialog.askdirectory(title=T("选择已解包 MOD 文件夹", "Choose an unpacked MOD folder"))
-        if value:
-            self.vars["input"].set(value)
-
-    def _browse_directory(self, name: str) -> None:
-        value = filedialog.askdirectory(title=T("选择游戏原始安装目录（只读）", "Choose the original game install (read-only)"))
-        if value:
-            self.vars[name].set(value)
-
-    def _browse_output(self) -> None:
-        parent = filedialog.askdirectory(title=T("选择输出父目录；工具会创建新的子目录", "Choose the output parent folder; a new subfolder is created"))
-        if not parent:
+            self.configuration.parent.mkdir(parents=True, exist_ok=True)
+            staging = self.configuration.with_suffix('.tmp')
+            staging.write_text(json.dumps({'version': 2, 'game': self.game.get(), 'output': self.output.get()}, ensure_ascii=False), encoding='utf-8')
+            os.replace(staging, self.configuration)
+        except OSError:
+            self.directory_error.set(T('目录设置未能保存。', 'Folder settings could not be saved.'))
             return
-        raw_name = self.vars["id"].get().strip() or Path(self.vars["input"].get().strip() or "converted-mod").stem
-        child_name = mod_converter.safe_id(raw_name) + "-wardrobe"
-        candidate = Path(parent) / child_name
-        number = 2
-        while candidate.exists():
-            candidate = Path(parent) / f"{child_name}-{number}"
-            number += 1
-        self.vars["output"].set(str(candidate))
+        self._start()
 
-    def _set_report(self, text: str) -> None:
-        self.report.configure(state="normal")
-        self.report.delete("1.0", "end")
-        self.report.insert("1.0", text)
-        self.report.configure(state="disabled")
+    def add_inputs(self, paths):
+        if self.closing: return
+        for value in paths:
+            path = Path(value)
+            key = str(path.resolve()).casefold()
+            if any(str(item['source'].resolve()).casefold() == key and item['state'] in ('waiting', 'running') for item in self.rows.values()): continue
+            row = self.tree.insert('', 'end', values=(path.name, T('等待转换', 'Waiting')))
+            self.rows[row] = {'source': path, 'state': 'waiting', 'result': None, 'error': None}
+            self.pending.append(row)
+        self._start()
 
-    def _args(self, command: str) -> argparse.Namespace:
-        self._sync_hide_parts()
-        values = [command, "--input", self.vars["input"].get()]
-        if command == "convert":
-            values += ["--output", self.vars["output"].get()]
-            selected_category = self.category.get().strip()
-            if selected_category and selected_category != AUTO:
-                values += ["--category", selected_category]
-            if self.vars["id"].get().strip():
-                values += ["--id", self.vars["id"].get().strip()]
-            plan = self._plan_payload()
-            if plan is not None:
-                # A plan replaces the single-part fields, which the CLI rejects
-                # together with --parts-plan.
-                values += ["--parts-plan", self._write_plan_file(plan)]
-            else:
-                selected_part = self.part.get().strip()
-                if selected_part and selected_part != AUTO:
-                    values += ["--part", selected_part]
-                for flag, name in (("--prefab", "prefab"), ("--catalog", "catalog"),
-                                   ("--native-id", "native")):
-                    if self.vars[name].get().strip():
-                        values += [flag, self.vars[name].get().strip()]
-            for part in self.hide_parts:
-                values += ["--hide-part", part]
-            if self.allow_crc.get():
-                values.append("--allow-crc-mismatch")
-            if self.static_only.get():
-                values.append("--experimental-static-only")
-            if self.prune_unreachable.get():
-                values.append("--prune-unreachable")
-            if not self.body_rule_hides.get():
-                values.append("--no-body-rule-hides")
-        if self.vars["game"].get().strip():
-            values += ["--game-root", self.vars["game"].get().strip()]
-        return mod_converter.make_parser().parse_args(values)
-
-    def inspect(self) -> None:
-        self._start("inspect")
-
-    def convert(self) -> None:
-        self._start("convert")
-
-    def _start(self, command: str) -> None:
-        if self.busy:
+    def _start(self):
+        if self.busy or not self.pending or self.closing: return
+        if not self.game.get().strip() or not Path(self.game.get()).is_dir():
+            self.directory_error.set(T('请选择游戏目录。', 'Choose the game folder.'))
             return
-        if not self.vars["input"].get().strip():
-            self._set_report(T("[错误] 请先选择输入 MOD 文件夹或 PAK。", "[Error] Choose an input MOD folder or PAK first."))
-            self.status.configure(text=T("状态：缺少输入", "Status: input missing"), fg=self.ERROR)
-            return
-        try:
-            # Capture every Tk variable on the UI thread.  The worker only
-            # receives an immutable argparse Namespace and never touches Tk.
-            args = self._args(command)
-        except (SystemExit, ValueError, OSError) as error:
-            self._set_report(T("[错误] 参数无效：", "[Error] Invalid arguments: ") + (str(error) or T("请检查输入", "check the input")))
-            self.status.configure(text=T("状态：参数无效", "Status: invalid arguments"), fg=self.ERROR)
-            return
-        if command == "convert":
-            if not str(getattr(args, "output", "")).strip():
-                self._set_report(T("[错误] 请先选择一个新的输出目录。", "[Error] Choose a new output folder first."))
-                self.status.configure(text=T("状态：缺少输出目录", "Status: output folder missing"), fg=self.ERROR)
-                return
-            input_path = args.input.resolve()
-            output_path = args.output.resolve()
-            if output_path.exists():
-                self._set_report(T("[错误] 输出目录已存在，请用“选择父目录”生成新的子目录，或手动填写新路径。", "[Error] The output folder already exists; use Choose parent folder to create a subfolder, or enter a new path."))
-                self.status.configure(text=T("状态：输出目录已存在", "Status: output folder exists"), fg=self.ERROR)
-                return
-            if output_path == input_path or output_path.is_relative_to(input_path):
-                self._set_report(T("[错误] 输出目录不能与输入相同或位于输入目录内。", "[Error] The output folder must not equal or be inside the input folder."))
-                self.status.configure(text=T("状态：输出路径无效", "Status: invalid output path"), fg=self.ERROR)
-                return
+        self.directory_error.set('')
+        # All Tk state is captured on the UI thread.
+        game = Path(self.game.get())
+        output = Path(self.output.get().strip()) if self.output.get().strip() else None
+        batch = [(row, self.rows[row]['source']) for row in self.pending]
+        self.pending.clear()
         self.busy = True
-        self.inspect_button.configure(state="disabled")
-        self.convert_button.configure(state="disabled")
-        self.status.configure(text=T("状态：正在检查/转换，请稍候…", "Status: inspecting/converting, please wait…"), fg=self.ACCENT)
-        self._set_report(T("正在处理大型 PAK 或结构化资源，请不要关闭窗口…", "Processing a large PAK or structured resources; do not close the window…"))
-        thread = threading.Thread(target=self._worker, args=(command, args), daemon=True)
-        thread.start()
+        self.cancelled.clear()
+        for row, _ in batch: self.rows[row]['state'] = 'running'
+        for widget in self.directory_controls: widget.configure(state='disabled')
+        self.cancel_button.configure(state='normal')
+        self.clear_button.configure(state='disabled')
+        self.progress.grid()
+        self.progress.start(15)
+        threading.Thread(target=self._work, args=(batch, game, output), daemon=True).start()
 
-    def _worker(self, command: str, args: argparse.Namespace) -> None:
-        try:
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = mod_converter.run(args)
-            output = stdout.getvalue() or stderr.getvalue()
-            self.events.put(("done", (command, code, output)))
-        except Exception as error:  # UI boundary: show an actionable error.
-            self.events.put(("error", str(error)))
+    def _work(self, batch, game, output):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                with self.engine(game, progress=lambda text: self.events.put(('progress', text)), cancelled=self.cancelled.is_set) as engine:
+                    for row, source in batch:
+                        if self.cancelled.is_set():
+                            self.events.put(('cancelled', row))
+                            continue
+                        self.events.put(('running', row))
+                        try: self.events.put(('result', row, engine.convert(source, output)))
+                        except Exception as error:
+                            if getattr(error, 'code', '') == 'CANCELLED': self.events.put(('cancelled', row))
+                            else: self.events.put(('error', row, describe_error(error)))
+            except Exception as error:
+                for row, _ in batch: self.events.put(('error', row, describe_error(error)))
+            finally: self.events.put(('done',))
 
-    def _drain(self) -> None:
-        try:
-            while True:
-                kind, value = self.events.get_nowait()
+    def _poll(self):
+        while True:
+            try: event = self.events.get_nowait()
+            except queue.Empty: break
+            kind = event[0]
+            if kind == 'progress': self.status.set(event[1])
+            elif kind == 'done':
                 self.busy = False
-                self.inspect_button.configure(state="normal")
-                self.convert_button.configure(state="normal")
-                if kind == "done":
-                    command, code, output = value  # type: ignore[misc]
-                    text = str(output)
-                    self.last_report = report_json(text)
-                    self._set_report(readable_report(text))
-                    if code == 0 and command == "inspect":
-                        self.last_output = ""
-                        if self.open_output_button is not None:
-                            self.open_output_button.configure(state="disabled")
-                        self.status.configure(text=T("状态：只读检查完成，未生成可安装包", "Status: inspection complete; no installable package was produced"), fg=self.OK)
-                    elif code == 0:
-                        self.last_output = self.vars["output"].get().strip()
-                        if self.open_output_button is not None:
-                            self.open_output_button.configure(state="normal")
-                        self.status.configure(text=T("状态：完成，可把输出目录内容合并到游戏目录", "Status: done; merge the output folder into the game directory"), fg=self.OK)
-                    else:
-                        self.last_output = ""
-                        if self.open_output_button is not None:
-                            self.open_output_button.configure(state="disabled")
-                        self.status.configure(text=T("状态：已阻止，请按报告修正输入", "Status: blocked; fix the input as described by the report"), fg=self.ERROR)
-                else:
-                    self._set_report(T("[错误] ", "[Error] ") + str(value))
-                    self.status.configure(text=T("状态：发生错误", "Status: error"), fg=self.ERROR)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._drain)
+                self.progress.stop()
+                self.progress.grid_remove()
+                self.progress.configure(value=0)
+                self.status.set('')
+                self.cancel_button.configure(state='disabled')
+                self.clear_button.configure(state='normal')
+                for widget in self.directory_controls: widget.configure(state='normal')
+                if self.closing:
+                    self._destroy()
+                    return
+                self._start()
+            elif event[1] in self.rows:
+                row, item = event[1], self.rows[event[1]]
+                if kind == 'running':
+                    self.tree.set(row, 'result', T('正在转换…', 'Converting…'))
+                    self.tree.selection_set(row)
+                elif kind == 'result':
+                    result = event[2]
+                    item.update(state='done', result=result)
+                    label = T(f'已转换 · {len(result.entries)} 项', f'Converted · {len(result.entries)} items')
+                    if result.notices: label += T(' · 需测试', ' · Test in game')
+                    self.tree.set(row, 'result', label)
+                    self.tree.item(row, tags=('warning',) if result.notices else ())
+                elif kind == 'error':
+                    item.update(state='error', error=event[2])
+                    self.tree.set(row, 'result', T('未转换 · 查看原因', 'Failed · View reason'))
+                    self.tree.item(row, tags=('error',))
+                elif kind == 'cancelled':
+                    item['state'] = 'cancelled'
+                    self.tree.set(row, 'result', T('已取消', 'Cancelled'))
+        self._selection_changed()
+        self.poll_id = self.root.after(80, self._poll)
+
+    def selected(self):
+        rows = self.tree.selection()
+        return self.rows.get(rows[0]) if rows else None
+
+    def _selection_changed(self):
+        selected = self.selected()
+        self.open_button.configure(state='normal' if selected and selected.get('result') else 'disabled')
+        self.details_button.configure(state='normal' if selected and (selected.get('result') or selected.get('error')) else 'disabled')
+
+    def open_result(self):
+        selected = self.selected()
+        if selected and selected.get('result'):
+            path = Path(selected['result'].output)
+            if path.is_file(): os.startfile(str(path.parent))
+            elif path.is_dir(): os.startfile(str(path))
+
+    def show_details(self):
+        item = self.selected()
+        if not item or not (item.get('result') or item.get('error')): return
+        window = tk.Toplevel(self.root)
+        window.title(item['source'].name)
+        window.geometry('670x410')
+        window.minsize(500, 280)
+        self.detail_windows.add(window)
+        window.bind('<Destroy>', lambda event: self.detail_windows.discard(window) if event.widget == window else None)
+        frame = ttk.Frame(window, padding=20)
+        frame.pack(fill='both', expand=True)
+        text = tk.Text(frame, wrap='word', font=('Microsoft YaHei UI', 10), padx=14, pady=12, relief='flat', bg='#ffffff', fg='#1f2937')
+        scrollbar = ttk.Scrollbar(frame, command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        text.pack(fill='both', expand=True)
+        lines = []
+        if item.get('error'): lines.append(item['error'])
+        else:
+            result = item['result']
+            for notice in result.notices:
+                lines.extend([notice.message, ''])
+                lines.extend(notice.paths[:20])
+                if len(notice.paths) > 20: lines.append(T(f'另有 {len(notice.paths)-20} 项，详见输出报告。', f'{len(notice.paths)-20} more items in the output report.'))
+                lines.append('')
+            lines.append(T('已转换', 'Converted'))
+            lines.extend(entry['name'] for entry in result.entries)
+        text.insert('1.0', '\n'.join(lines))
+        text.configure(state='disabled')
+        ttk.Button(window, text=T('关闭', 'Close'), command=window.destroy).pack(pady=(0, 16))
+        window.bind('<Escape>', lambda _: window.destroy())
+
+    def cancel(self):
+        self.cancelled.set()
+        for row in self.pending:
+            self.rows[row]['state'] = 'cancelled'
+            self.tree.set(row, 'result', T('已取消', 'Cancelled'))
+        self.pending.clear()
+        if self.busy: self.status.set(T('正在取消…', 'Cancelling…'))
+
+    def clear(self):
+        if self.busy: return
+        for row in self.tree.get_children(): self.tree.delete(row)
+        self.rows.clear()
+        self.pending.clear()
+        self._selection_changed()
+
+    def close(self):
+        if self.busy:
+            self.closing = True
+            self.cancel()
+            self.root.withdraw()
+        else: self._destroy()
+
+    def _destroy(self):
+        if self.poll_id:
+            self.root.after_cancel(self.poll_id)
+            self.poll_id = None
+        for window in tuple(self.detail_windows): window.destroy()
+        self.root.destroy()
 
 
-def smoke_test(argv: list[str]) -> int:
-    parser = mod_converter.make_parser()
-    args = parser.parse_args(["inspect", *argv])
-    return mod_converter.run(args)
-
-
-def gui_self_test() -> int:
-    """Build every window off-screen and fail loudly if the interface cannot start.
-
-    The release EXE is windowed, so a startup exception is invisible to the build
-    script without an explicit check.  This catches module-level and widget
-    construction regressions (and frozen-build data problems) before shipping.
-    """
-    try:
-        root = tk.Tk()
+def gui_self_test():
+    import time
+    from batch_converter import Result, Notice
+    from types import SimpleNamespace
+    class FakeEngine:
+        def __init__(self, *args, **kwargs): self.progress = kwargs['progress']
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def convert(self, source, output):
+            assert output is None, 'Blank output must reach the engine as automatic location'
+            self.progress('test')
+            return Result(str(source), str(source.parent/'Test-衣橱.zip'), [{'name': 'Test outfit'}], [Notice('TEST', 'Test issue')])
+    with tempfile.TemporaryDirectory(prefix='owots-gui-test-') as temporary:
+        root = TkinterDnD.Tk()
         root.withdraw()
-        window = ConverterWindow(root)
-        window.vars["input"].set(str(Path.cwd() / "gui-self-test.pak"))
-        window.vars["output"].set(str(Path.cwd() / "gui-self-test-output"))
-        automatic = window._args("convert")
-        if automatic.category is not None or automatic.part is not None:
-            raise AssertionError("the Auto sentinel leaked into the CLI arguments")
-        window.category.set("body")
-        selected = window._args("convert")
-        if selected.category != "body" or selected.part is not None:
-            raise AssertionError("the selected category did not reach the CLI arguments")
-        window._toggle_advanced()
-        if window.hide_list is None or window.plan_summary is None:
-            raise AssertionError("the advanced window did not build its new controls")
-        # A parts plan must reach the CLI as a plan file, never mixed with the
-        # single-part flags the CLI rejects alongside it.
-        window.part.set("BODY")
-        window.vars["prefab"].set("GameDesign/Action/Player/_Prefab/PartsList/Body/ch001_01_00.pfb")
-        window.vars["catalog"].set("gamedesign/system/catalogdata/playerbodypartslist_1st.user")
-        window.vars["native"].set("28284")
-        window._plan_fill_from_report()
-        window._plan_clear()
-        window._plan_remove_selected()
-        window._open_plan_window()
-        window._plan_add_current()
-        if not window.plan_rows:
-            raise AssertionError("adding a plan row from the advanced fields failed")
-        if window.plan_window is not None:
-            window.plan_window.destroy()
-            window.plan_window = None
-            window.plan_tree = None
-        planned = window._args("convert")
-        if getattr(planned, "parts_plan", None) is None or planned.part is not None:
-            raise AssertionError("the parts plan did not reach the CLI arguments")
-        plan_path = Path(planned.parts_plan)
-        if not plan_path.is_file():
-            raise AssertionError("the parts plan file was not written")
-        payload = json.loads(plan_path.read_text(encoding="utf-8"))
-        if payload["parts"][0]["nativeId"] != 28284:
-            raise AssertionError("the plan row lost its native id")
-        window._plan_clear()
-        if getattr(window._args("convert"), "parts_plan", None) is not None:
-            raise AssertionError("clearing the plan did not restore single-part mode")
-        # Declared hidden parts and the new switches must reach the CLI.
-        part_names = [window.hide_list.get(index) for index in range(window.hide_list.size())]
-        window.hide_list.selection_set(part_names.index("CLOAK"))
-        window._sync_hide_parts()
-        window.prune_unreachable.set(True)
-        window.body_rule_hides.set(False)
-        flagged = window._args("convert")
-        if list(flagged.hide_parts or []) != ["CLOAK"]:
-            raise AssertionError("the declared hidden part did not reach the CLI")
-        if not flagged.prune_unreachable or flagged.body_rule_hides:
-            raise AssertionError("the new switches did not reach the CLI")
-        window._toggle_advanced()
-        if window.hide_list is not None or window.plan_summary is not None:
-            raise AssertionError("closing the advanced window did not release its widgets")
-        for stale in window.plan_files:
-            os.unlink(stale)
-        window.plan_files = []
-        root.destroy()
-    except Exception as error:  # Build gate: report the reason instead of a traceback dialog.
-        print(f"GUI self-test failed: {error}")
-        return 1
-    print("GUI self-test OK")
+        app = App(root, configuration=Path(temporary)/'settings.json', engine=FakeEngine)
+        assert app.output.get() == ''
+        app.game.set(temporary)
+        app._directories_changed()
+        assert app.configuration.is_file()
+        assert json.loads(app.configuration.read_text(encoding='utf-8'))['output'] == ''
+        app.on_drop(SimpleNamespace(data=root.tk.call('list', str(Path(temporary)/'Mod with spaces.zip'))))
+        deadline = time.monotonic()+5
+        while app.busy and time.monotonic()<deadline:
+            root.update()
+            time.sleep(.01)
+        assert not app.busy and len(app.rows) == 1
+        row = next(iter(app.rows))
+        root.update()
+        app.tree.selection_set(row)
+        output_file = Path(app.rows[row]['result'].output)
+        output_file.write_bytes(b'archive fixture')
+        opened = []
+        original_startfile = os.startfile
+        try:
+            os.startfile = lambda path: opened.append(Path(path))
+            app.open_result()
+            assert opened == [output_file.parent]
+        finally:
+            os.startfile = original_startfile
+        app.show_details()
+        assert len(app.detail_windows) == 1
+        for window in tuple(app.detail_windows): window.destroy()
+        root.update()
+        assert not app.detail_windows
+        app.rows[row].update(result=None, error='A missing resource')
+        app.show_details()
+        assert app.detail_windows
+        app.clear()
+        assert not app.rows
+        app.close()
+        for settings, expected in (
+            ({'output': str(Path.home()/'Documents'/'OWOTS Mods')}, ''),
+            ({'output': temporary}, temporary),
+            ({'version': 2, 'output': ''}, ''),
+        ):
+            configuration = Path(temporary)/'settings.json'
+            configuration.write_text(json.dumps(settings), encoding='utf-8')
+            root = TkinterDnD.Tk()
+            root.withdraw()
+            app = App(root, configuration=configuration)
+            assert app.output.get() == expected
+            app.close()
+        entered, release_first = threading.Event(), threading.Event()
+        seen = []
+        class QueueEngine(FakeEngine):
+            def convert(self, source, output):
+                assert output is None
+                seen.append(source.name)
+                if source.name == 'First Mod.zip':
+                    entered.set()
+                    assert release_first.wait(5), 'Batch append test timed out'
+                if source.name == 'Broken Mod.rar':
+                    raise ValueError('Unreadable mod fixture')
+                return Result(str(source), str(source.parent/(source.name+'-衣橱.zip')), [{'name': source.name}])
+        root = TkinterDnD.Tk()
+        root.withdraw()
+        app = App(root, configuration=Path(temporary)/'queue.json', engine=QueueEngine)
+        app.game.set(temporary)
+        names = ['First Mod.zip', 'Broken Mod.rar', '第三个 Mod 文件夹']
+        paths = [str(Path(temporary)/name) for name in names]
+        app.on_drop(SimpleNamespace(data=root.tk.call('list', *paths)))
+        try:
+            deadline = time.monotonic()+5
+            while not entered.is_set() and time.monotonic()<deadline:
+                root.update()
+                time.sleep(.01)
+            assert entered.is_set()
+            later = str(Path(temporary)/'Later Mod.7z')
+            app.on_drop(SimpleNamespace(data=root.tk.call('list', paths[0], later)))
+            assert len(app.rows) == 4 and len(app.pending) == 1
+        finally:
+            release_first.set()
+        deadline = time.monotonic()+5
+        while app.busy and time.monotonic()<deadline:
+            root.update()
+            time.sleep(.01)
+        assert not app.busy and not app.pending
+        assert seen == names + ['Later Mod.7z']
+        states = {item['source'].name: item['state'] for item in app.rows.values()}
+        assert states == {name: 'error' if name == 'Broken Mod.rar' else 'done' for name in seen}
+        app.close()
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "--cli":
-        try:
-            args = mod_converter.make_parser().parse_args(argv[1:])
-        except SystemExit as error:
-            return int(error.code or 0)
-        return mod_converter.run(args)
-    if argv and argv[0] == "--smoke-test":
-        return smoke_test(argv[1:])
-    if argv and argv[0] == "--self-test":
-        return gui_self_test()
-    root = tk.Tk()
-    # ttk's default theme keeps native keyboard/focus behavior; only colors
-    # and spacing are customized for readable dark-mode contrast.
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    style.configure("TFrame", background=ConverterWindow.BG)
-    style.configure("TLabelframe", background=ConverterWindow.PANEL, foreground=ConverterWindow.TEXT)
-    style.configure("TLabelframe.Label", background=ConverterWindow.PANEL, foreground=ConverterWindow.TEXT)
-    style.configure("TLabel", background=ConverterWindow.PANEL, foreground=ConverterWindow.TEXT)
-    style.configure("TButton", padding=(12, 7), foreground=ConverterWindow.TEXT, background="#2b4055")
-    style.map("TButton", background=[("active", ConverterWindow.ACCENT)])
-    style.configure("TEntry", fieldbackground="#0d0f12", foreground=ConverterWindow.TEXT)
-    style.configure("TCombobox", fieldbackground="#0d0f12", background="#0d0f12",
-                    foreground=ConverterWindow.TEXT, arrowcolor=ConverterWindow.TEXT)
-    style.map("TCombobox",
-              fieldbackground=[("readonly", "#0d0f12"), ("focus", "#161b22")],
-              background=[("readonly", "#0d0f12"), ("active", "#243243")],
-              foreground=[("readonly", ConverterWindow.TEXT), ("disabled", ConverterWindow.MUTED)])
-    ConverterWindow(root)
+def main():
+    if '--self-test' in sys.argv: return gui_self_test()
+    if len(sys.argv)>1 and sys.argv[1] == '--batch':
+        import batch_converter
+        return batch_converter.main(sys.argv[2:])
+    if len(sys.argv)>1 and sys.argv[1] == '--cli':
+        import mod_converter
+        return mod_converter.run(mod_converter.make_parser().parse_args(sys.argv[2:]))
+    root = TkinterDnD.Tk()
+    app = App(root)
+    if len(sys.argv)>1: root.after(150, lambda: app.add_inputs(sys.argv[1:]))
     root.mainloop()
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__': raise SystemExit(main())

@@ -1,5 +1,18 @@
 # 把此文档拖给 AI：帮我转换 OWOTS MOD
 
+2026-09-18 新版：普通用户直接在 EXE 中拖入文件夹、ZIP、RAR、7z 或 PAK。
+本地 AI 的默认入口为 `OWOTS-ModConverter.exe --batch --input <Mod> --game-root <原始游戏目录> --report <新报告.json>`。
+`--output <输出目录>` 可选；省略时在原输入旁边生成 `原名称-衣橱.zip`，同名结果自动加编号。
+程序自动拆分可穿戴条目，使用资源内容识别，不读取 Mod 描述或脚本内容。
+读取报告中的 `entries`、`notices`、`ledger`；`needs_test` 表示已生成但有明确限制，需要进游戏测试。
+报告中的 `output` 已是完整 ZIP，无需再次调用 Pack 脚本；支持 schema 3 配套穿戴。
+下文 `--cli`、显式部位计划和实验参数属于保留的单条目流程，不是新版窗口的操作步骤。
+
+旋转处理：只有旋转不匹配、名称/层级/缩放仍匹配的单个 93 关节独立骨架，且未被部位直接引用时，
+现在自动使用 BODY 模型内嵌休止数据，无需 `--prune-unreachable`。结果记录
+`ACTOR_SKELETON_ROTATION_MESH_FALLBACK`，不导入该骨架的绑定位置或旋转，不覆盖原始 `/90`。
+扩展拓扑、直接引用不兼容骨架和脚本行为仍需单独处理。
+
 给玩家：解压完整工具包，保留 `OWOTS-ModConverter.exe`、`OWOTS_STM_Release.list`
 和 `ai-skill` 文件夹。把本文件拖入 AI 对话，说“请按此文档帮我转换 MOD”。
 有本地文件/终端能力的 AI 可以直接操作；网页聊天 AI 不会因为读到文档就获得电脑权限。

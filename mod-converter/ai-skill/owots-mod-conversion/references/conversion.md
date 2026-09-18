@@ -69,7 +69,8 @@ body 可以有 BODY/HEAD/HAIR；披风、护手、武器分别是独立分类。
 | PRUNED_UNREACHABLE_RESOURCE | 已按 `--prune-unreachable` 逐条排除，既不是成功也不是失败信号；逐条核对原因，确认没有漏掉用户想要的部位 |
 | MANIFEST_HIDE_PARTS_FROM_BODY_RULES | 已按原生体型可见性写入 `hideParts`；核对 `bodyId` 与 `derived`，与用户预期不符时用 `--no-body-rule-hides` |
 | ACTOR_SKELETON_INVALID / ACTOR_SKELETON_TOPOLOGY_UNSUPPORTED / ACTOR_SKELETON_AMBIGUOUS | FBXSKEL 不是唯一可解析的 93 关节候选；修复输入或把扩展 actor 行为转入专用适配 |
-| ACTOR_SKELETON_TRANSFORM_UNSUPPORTED / ACTOR_SKELETON_TOPOLOGY_MISMATCH | 与原始 `/90` 的旋转、缩放、名称顺序或父层级不一致；v1 只允许绑定位置变化 |
+| ACTOR_SKELETON_ROTATION_MESH_FALLBACK | 仅旋转不匹配的未引用独立骨架已改用 BODY mesh 内嵌休止；不导入该骨架的旋转/绑定位置，保留需要测试提示 |
+| ACTOR_SKELETON_TRANSFORM_UNSUPPORTED / ACTOR_SKELETON_TOPOLOGY_MISMATCH | 缩放、名称顺序或父层级不一致，或模型直接引用旋转不兼容的骨架；不能用旋转回退绕过这些情况 |
 | ACTOR_SKELETON_BODY_MESH_REQUIRED / ACTOR_SKELETON_BODY_REQUIRED / ACTOR_SKELETON_BASELINE_MISSING | 只能将骨架和同一 body 条目的 MOD-owned BODY mesh 一起发布，并提供原始 `/90` 参考 |
 | ACTOR_SKELETON_ADAPTER_REQUIRED | 仅当旧的直接审计路径没有运行 actor 骨架分析时出现；静态部位图不能代替角色根骨架 |
 | DYNAMIC_BEHAVIOR_UNSUPPORTED | 转 special-mods 流程；用户只想静态候选时明确列出省略行为 |

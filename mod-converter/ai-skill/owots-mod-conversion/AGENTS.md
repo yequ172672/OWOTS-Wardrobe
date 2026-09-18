@@ -21,3 +21,5 @@
 - Test scripts with isolated fixtures and genuine read-only game discovery.
 - Separate ordinary success from explicit reviewed experimental output.
 - Preserve user authorization and do not infer local disk access from an uploaded document.
+- The 2026-09-18 player workflow uses automatic `--batch`; `--cli` remains the explicit single-plan interface. Pack accepts schema 2/3 and batch `needs_test` while retaining that status, verifies every declared accessory and registration, and never claims game visual acceptance.
+- In dev2, `--batch --output` is optional and `output` is an already packed ZIP beside the input by default. Deliver that ZIP directly. Pack remains for legacy loose output and earlier batch folders; do not pass a ZIP to its ConvertedRoot parameter.

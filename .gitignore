@@ -11,3 +11,6 @@ __pycache__/
 # Reproducible converter worker binaries and game-format metadata are packaged
 # by mod-converter/prepare_dependencies.py, not stored as generated build output.
 /mod-converter/runtime/
+
+# Local distribution packages; never commit generated releases.
+/release/

@@ -8,6 +8,7 @@
 | `WardrobeCompositionTests.cs` | Four-category suppression, native fallback hiding, retained intent/restoration and missing entry regression |
 | `WardrobeRegistryTests.cs` | Legacy full-outfit projection, relocation-stable IDs and whole-package conflict isolation |
 | `WardrobeSkeletonTests.cs` | Optional 93-joint metadata, private paths, immutable snapshots, malformed rejection and legacy compatibility |
+| `WardrobeEquipTests.cs` | Separate accessory registration, declared wear, manual overrides, body cancellation/rewear, missing dependencies and saved restoration |
 
 ## Dependencies
 - Parent Appearance.Core project and .NET 10; no test framework packages.

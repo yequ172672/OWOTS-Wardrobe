@@ -14,8 +14,8 @@ import subprocess
 import sys
 import zipfile
 
-RELEASE_VERSION = '2026.09.17b'
-RELEASE_DATE = '20260917b'
+RELEASE_VERSION = '2026.09.18-dev4'
+RELEASE_DATE = '20260918-dev4'
 
 
 def digest(path):
@@ -24,16 +24,23 @@ def digest(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, required=True, help='New build directory')
-    args = parser.parse_args()
     root = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True, help='New directory for build intermediates')
+    parser.add_argument('--release-dir', type=Path, default=root.parent/'release', help='Final package directory (default: project release/)')
+    args = parser.parse_args()
     output = args.output.resolve()
+    release = args.release_dir.resolve()
+    archive = release / f'OWOTS-ModConverter-{RELEASE_DATE}.zip'
+    if archive.exists():
+        raise SystemExit('Release archive already exists; use a new version or --release-dir')
     if output.exists():
         raise SystemExit('Build output already exists; choose a new path')
     runtime = root / 'runtime'
     if not (runtime / 'AppearanceRsz.exe').is_file():
         raise SystemExit('Run prepare_dependencies.py first')
+    if not (runtime / '7zip/7z.exe').is_file():
+        raise SystemExit('Run prepare_archive_tools.py first')
     output.mkdir(parents=True)
     staged_runtime = output / 'bundled-runtime'
     shutil.copytree(runtime, staged_runtime, ignore=shutil.ignore_patterns('OWOTS_STM_Release.list'))
@@ -50,7 +57,9 @@ def main():
     if tk_license.is_file():
         shutil.copyfile(tk_license, build_licenses / 'Tk-license.terms')
     versions = {}
-    for name in ('pyinstaller', 'pyinstaller-hooks-contrib', 'zstandard', 'altgraph', 'pefile', 'pywin32-ctypes', 'packaging'):
+    for name in ('pyinstaller', 'pyinstaller-hooks-contrib', 'zstandard', 'altgraph', 'pefile', 'pywin32-ctypes', 'packaging',
+                 'tkinterdnd2', 'rarfile', 'py7zr', 'backports.zstd', 'brotli', 'psutil', 'pycryptodomex',
+                 'pyppmd', 'pybcj', 'multivolumefile', 'inflate64', 'texttable'):
         distribution = importlib.metadata.distribution(name)
         versions[name] = distribution.version
         for relative in distribution.files or []:
@@ -64,6 +73,10 @@ def main():
                     '--paths', str(root), '--collect-submodules', 'owots_vendor',
                     '--collect-all', 'zstandard', '--hidden-import', 'game_pak_reference',
                     '--hidden-import', 'texture_resolution',
+                    '--collect-all', 'tkinterdnd2', '--collect-all', 'py7zr',
+                    '--collect-all', 'backports.zstd', '--collect-all', 'pyppmd',
+                    '--collect-all', 'inflate64', '--collect-all', 'bcj',
+                    '--collect-all', 'Cryptodome', '--hidden-import', 'rarfile',
                     '--add-data', str(staged_runtime) + ';runtime',
                     '--add-data', str(build_licenses) + ';licenses',
                     str(root / 'converter_gui.py')], check=True)
@@ -81,7 +94,8 @@ def main():
     source_target = package / 'source'
     source_target.mkdir()
     for filename in ('mod_converter.py', 'converter_gui.py', 'game_pak_reference.py',
-                     'texture_resolution.py', 'prepare_dependencies.py', 'build_release.py',
+                     'texture_resolution.py', 'input_containers.py', 'rsz_paths.py', 'mesh_probe.py',
+                     'batch_converter.py', 'appearance_duplicates.py', 'prepare_dependencies.py', 'prepare_archive_tools.py', 'build_release.py',
                      'convert_mod.cmd', 'README.md', 'AI-START.md', 'requirements.txt', 'requirements-build.txt', 'AGENTS.md'):
         shutil.copyfile(root / filename, source_target / filename)
     for dirname in ('owots_vendor', 'tests', 'licenses', 'ai-skill'):
@@ -102,12 +116,12 @@ def main():
         name='OWOTS-ModConverter', version=RELEASE_VERSION, python=sys.version,
         dependencies=versions, prerequisites=['.NET 10 x64 runtime for structured resource worker'],
         gameAssetsIncluded=False, files=files), ensure_ascii=False, indent=2), encoding='utf-8')
-    archive = output / f'OWOTS-ModConverter-{RELEASE_DATE}.zip'
+    release.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in sorted(package.rglob('*')):
             if path.is_file():
                 bundle.write(path, Path(package.name) / path.relative_to(package))
-    (output / 'SHA256.txt').write_text(digest(archive) + '  ' + archive.name + '\n', encoding='ascii')
+    (release / (archive.name + '.sha256')).write_text(digest(archive) + '  ' + archive.name + '\n', encoding='ascii')
     print(json.dumps(dict(archive=str(archive), sha256=digest(archive), bytes=archive.stat().st_size)))
 
 

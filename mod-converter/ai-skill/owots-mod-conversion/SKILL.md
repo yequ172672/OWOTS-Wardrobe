@@ -5,6 +5,13 @@ description: Convert user-provided OWOTS loose or PAK appearance mods into indep
 
 # OWOTS MOD 转换助手
 
+新版默认使用 `--batch --input ... --game-root ... --output ... --report ...`，自动识别压缩包与多条目，
+其中 `--output` 可省略，默认在每个原输入旁边生成 `原名称-衣橱.zip`。返回的 `output` 是 ZIP 路径，直接交付；Pack 脚本仅用于下文旧单条目目录输出。
+按 `entries`/`notices`/`ledger` 交付；`needs_test` 仍有实际输出，须保留限制说明。
+下文 `inspect`、部位计划和实验参数是旧 `--cli` 的单条目流程。新版 GUI 没有部位计划控件。
+未被部位直接引用的单个 93 关节骨架如果仅旋转不匹配，会自动使用 BODY 内嵌休止数据；
+名称/层级/缩放仍须核对。记录回退原因，不把未迁移的旋转说成已经支持。
+
 交付实际可用的转换结果及有据可查的限制。先确定工具与原始游戏位置，再获取 MOD。
 本 skill 随转换器分发，也可由支持标准 skills 的本地 AI 安装；安装位置不等于工具目录。
 不要使用作者开发机的绝对路径。用户已给出的文件、路径和授权无需再次索取。

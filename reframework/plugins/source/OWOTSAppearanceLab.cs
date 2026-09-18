@@ -555,7 +555,7 @@ public static class OWOTSAppearanceLab {
             }
             requested[pair.Key] = selection;
         }
-        return changed ? new WardrobeSelectionState(requested, state.Visibility) : state;
+        return changed ? state with { Requested = requested } : state;
     }
 
     // Keep the legacy outfit/weapon projection equal to the real requested MODs so a
@@ -1161,7 +1161,7 @@ public static class OWOTSAppearanceLab {
     const string CaimoguUrl = "https://www.caimogu.cc/post/2485977.html";
     const string BilibiliUrl = "https://space.bilibili.com/93825767";
     const string DiscordName = "yequflac";
-    const string CurrentVersion = "2026.09.17";
+    const string CurrentVersion = "2026.09.18-dev";
     static volatile string s_latestVersion;
     static volatile string s_updateState = "checking";
 
@@ -2032,7 +2032,8 @@ public static class OWOTSAppearanceLab {
 
     static object StartWardrobeState(WardrobeSelectionState state, WardrobeRegistrySnapshot registry, string id, bool allowMissing) {
         var resolved = WardrobeSelections.Resolve(state, registry);
-        if (!allowMissing && resolved.Issues.Count > 0) throw new InvalidOperationException(string.Join("; ", resolved.Issues));
+        if (resolved.IncompleteDeclaredEquipment || (!allowMissing && resolved.Issues.Count > 0))
+            throw new InvalidOperationException(string.Join("; ", resolved.Issues));
         foreach (var part in resolved.Composition.HiddenParts)
             if (part != "HEAD" && part != "HAIR" && part != "CLOAK" && part != "GAUNTLET")
                 throw new InvalidOperationException("Native visibility not implemented for " + part);
@@ -2040,6 +2041,8 @@ public static class OWOTSAppearanceLab {
         if (resolved.Composition.HiddenParts.Count > 0 && via.GameObject.REFType.GetMethod("set_DrawSelf") == null)
             throw new InvalidOperationException("Visibility setter unavailable");
         var physical = new List<AppearancePart>();
+        var selectedPartTypes = new HashSet<int>(resolved.Composition.Effective.Values.SelectMany(value => registry.Entries[value].Parts)
+            .Select(part => (int)Enum.Parse<app.PlayerPartsDef.PARTS_TYPE>(part.Part)));
         bool hasOutfit = false;
         foreach (var selected in resolved.Composition.Effective) {
             if (selected.Key != WardrobeCategory.Weapon) hasOutfit = true;
@@ -2052,7 +2055,7 @@ public static class OWOTSAppearanceLab {
             // as native parts of the same change unless another selected entry provides them.
             if (s_nativeExtraParts.TryGetValue(selected.Value, out var extras))
                 foreach (var extra in extras)
-                    if (!physical.Exists(part => part.Part == extra.Part)) {
+                    if (!selectedPartTypes.Contains(extra.Part) && !physical.Exists(part => part.Part == extra.Part)) {
                         // Best-effort: never let a forced companion break the whole apply.
                         bool present = false;
                         try {
