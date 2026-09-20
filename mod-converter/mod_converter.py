@@ -73,7 +73,7 @@ def T(zh: str, en: str) -> str:
     return zh if CHINESE_UI else en
 
 
-TOOL_VERSION = "2026.09.18-dev4"
+TOOL_VERSION = "2026.09.20b"
 SCHEMA_VERSION = 4
 KNOWN_EXTENSIONS = (
     ".pfb", ".user", ".mdf2", ".mesh", ".tex", ".mmi", ".mpi",
@@ -1369,7 +1369,19 @@ def category_for_parts(parts: Sequence[str]) -> str:
     return next(iter(categories))
 
 
+def is_empty_mdf(payload: bytes) -> bool:
+    """Recognize a complete header-only MDF, not an arbitrary short/broken file.
+
+    With zero material entries there is no per-material OWOTS layout to detect.
+    Keep this exception separate from the strict nonempty material parser.
+    """
+    return (len(payload) == 16 and
+            struct.unpack('<4sHHQ', payload) in ((b'MDF\0', 1, 0, 0), (b'MDF\0', 1, 0, 1)))
+
+
 def mdf_dependencies(payload: bytes) -> tuple[str, ...]:
+    if is_empty_mdf(payload):
+        return ()
     # Use the bundled strict parser.  A regex fallback would silently miss
     # slot/streaming semantics and could publish a blurry or incomplete asset.
     try:

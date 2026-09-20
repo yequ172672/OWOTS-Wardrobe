@@ -14,6 +14,53 @@ def candidate(part, identity, stem, changed, variant='normal'):
 
 
 class PlanningTests(unittest.TestCase):
+    def test_empty_material_part_becomes_hide_only_with_body_and_all_materials_empty(self):
+        from types import SimpleNamespace
+        import struct
+        import mod_converter as mc
+        empty = struct.pack('<4sHHQ', b'MDF\0', 1, 0, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/'empty.mdf2.51'
+            path.write_bytes(empty)
+            asset = SimpleNamespace(path=path)
+            source = SimpleNamespace(get=lambda key: asset if key == 'head.mdf2' else None)
+            head = candidate('HEAD', 1, 'head', ['head.mdf2', 'head.mesh'])
+            body = candidate('BODY', 1, 'body', ['body.mesh'])
+            with BatchConverter(root) as converter:
+                converter.game = SimpleNamespace(find=lambda key: None, close=lambda: None)
+                converter._mesh_placeholder = lambda *args: {'hide': False}
+                self.assertEqual(mc.mdf_dependencies(empty), ())
+                hidden = converter._placeholder_parts([body, head], source, Result('test'))
+                self.assertIn(('normal', 'HEAD'), hidden)
+                self.assertEqual(converter._placeholder_parts([head], source, Result('test')), {})
+                custom = SimpleNamespace(get=lambda key: asset if key in ('head.mdf2', head.record['prefab']) else None)
+                self.assertEqual(converter._placeholder_parts([body, head], custom, Result('test')), {})
+                head.reached.add('visible.mdf2')
+                self.assertEqual(converter._placeholder_parts([body, head], source, Result('test')), {})
+
+    def test_empty_material_fallback_copies_bytes_without_serializing(self):
+        import struct
+        from types import SimpleNamespace
+        import mod_converter as mc
+        payload = struct.pack('<4sHHQ', b'MDF\0', 1, 0, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory)/'source', Path(directory)/'private.mdf2.51'
+            source.write_bytes(payload)
+            node = SimpleNamespace(asset=SimpleNamespace(path=source, extension='.mdf2'))
+            mc.Converter._copy_or_rewrite(None, node, target, {}, None)
+            self.assertEqual(target.read_bytes(), payload)
+
+    def test_empty_material_is_exact_header_not_truncated_or_nonempty(self):
+        import struct
+        import mod_converter as mc
+        empty = struct.pack('<4sHHQ', b'MDF\0', 1, 0, 1)
+        self.assertTrue(mc.is_empty_mdf(empty))
+        for payload in (empty[:-1], empty+b'\0', b'BAD!'+empty[4:],
+                        struct.pack('<4sHHQ', b'MDF\0', 1, 1, 1),
+                        struct.pack('<4sHHQ', b'MDF\0', 99, 0, 1)):
+            self.assertFalse(mc.is_empty_mdf(payload))
+
     def test_unrelated_archive_assets_are_reported_without_reading_source_documents(self):
         import tempfile
         import zipfile

@@ -12,7 +12,7 @@ import re
 import struct
 
 import rsz_paths
-from mod_converter import ConversionError
+from mod_converter import ConversionError, is_empty_mdf
 
 
 def digest(value):
@@ -174,6 +174,10 @@ class AppearanceFingerprints:
         active = active | {key}
         if extension == '.mdf2':
             from owots_vendor.workspace.appearance_mdf import parse_mdf, _semantic
+            if is_empty_mdf(base.path.read_bytes()):
+                token = self.file_token(base)
+                self.cache[key] = token
+                return token
             material = parse_mdf(base.path.read_bytes())
             for item in material.materialList:
                 for texture in item.textureList:

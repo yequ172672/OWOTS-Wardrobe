@@ -109,6 +109,13 @@ and test extracts remain outside it.
   verify every authored mesh, every main LOD, shadow references, index bounds and
   tiny geometry against the exact original. Morphs/streams/uncertainty preserve
   authored meshes. Do not use file size or bone count as hiding evidence.
+* Header-only MDF hiding uses `mod_converter.is_empty_mdf`: exact 16-byte MDF header,
+  version 1, zero materials, known flags 0/1. This is a leaf with no dependencies,
+  not permission to relax the nonempty MDF parser. A stock PFB graph whose entire
+  reachable material set is authored zero-material MDF may declare the part hidden
+  with a BODY owner. Mixed/custom graphs preserve the MDF bytes and original mesh
+  references. Fingerprints retain the empty MDF content. Failed authored HEAD/HAIR
+  scans block publication (`HEAD_REPLACEMENT_INCOMPLETE`) instead of dropping parts.
 * Common static mods are the compatibility target. A rotation-only mismatch in
   one unreferenced 93-joint rig automatically selects the documented BODY
   mesh-rest contract (user instruction 2026-09-18). Retain name/order, parent,

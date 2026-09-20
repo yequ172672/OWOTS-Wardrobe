@@ -275,6 +275,20 @@ class BatchConverter:
                 decisions = []
                 for candidate in options:
                     meshes = [key for key in candidate.reached if key.endswith('.mesh')]
+                    materials = [key for key in candidate.reached if key.endswith('.mdf2')]
+                    # Only stock prefab graphs prove the complete renderer set.
+                    # A mixed or custom graph keeps its original mesh/material
+                    # replacement, including zero-material MDF bytes unchanged.
+                    empty_materials = (bool(meshes) and bool(materials)
+                        and source.get(candidate.record['prefab']) is None
+                        and all((asset := source.get(key)) is not None
+                                and mc.is_empty_mdf(asset.path.read_bytes()) for key in materials))
+                    if empty_materials:
+                        result.placeholder_evidence.append({'prefab': candidate.record['prefab'],
+                            'part': part, 'hide': True, 'reason': 'zero-material-mdf',
+                            'materials': sorted(materials)})
+                        decisions.append(True)
+                        continue
                     proofs = []
                     for logical in meshes:
                         proof = self._mesh_placeholder(logical, source)
@@ -361,7 +375,12 @@ class BatchConverter:
             except (mc.ConversionError, ValueError, OSError) as error:
                 authored = {asset.logical.casefold() for asset in bundle.source.assets.values()}
                 if authored & getattr(error, 'reached_assets', set()):
-                    scan_errors.append({'prefab': record['prefab'], 'reason': str(error)})
+                    scan_errors.append({'prefab': record['prefab'], 'part': record['part'], 'reason': str(error)})
+        critical_errors = [e for e in scan_errors if e['part'] in ('HEAD', 'HAIR')]
+        if critical_errors:
+            raise mc.ConversionError('头部或头发替换无法完整读取，已停止转换，避免原角色头部重叠。\n'
+                + '\n'.join(e['prefab'] + ': ' + e['reason'] for e in critical_errors),
+                'HEAD_REPLACEMENT_INCOMPLETE')
         hidden = self._placeholder_parts(candidates, bundle.source, result)
         groups = group_candidates([c for c in candidates if (c.record['variant'], c.record['part']) not in hidden])
         if not groups:
