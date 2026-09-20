@@ -245,9 +245,15 @@ public static class OWOTSAppearanceLab {
     static readonly Dictionary<string, int> s_registrySlots = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     static string s_pendingModId, s_activeModId;
     static string s_transitionRequest;
+    // Presentation snapshot of the fifth category. Expected* describes the saved
+    // expectation; Locked* describes the transformation currently using the wardrobe
+    // appearance; pendingNext is true when they differ ("applies next time").
+    sealed record WardrobeTransformStatus(string? SelectedId, string? SelectedName,
+        TransformPolicy ExpectedPolicy, TransformPolicy? LockedPolicy, string? LockedEntryId, bool PendingNext);
+    static readonly WardrobeTransformSnapshotStore s_transformLocks = new WardrobeTransformSnapshotStore();
     sealed record MenuState(AppearanceEntry[] Entries, string Outfit, string Weapon, bool Busy, string Message, string[] Issues,
         WardrobeSelectionState State = null, WardrobeCompositionResult Composition = null,
-        Dictionary<string, WardrobeCategory> Categories = null);
+        Dictionary<string, WardrobeCategory> Categories = null, WardrobeTransformStatus Transform = null);
     static MenuState s_menu = new MenuState(Array.Empty<AppearanceEntry>(), null, null, false, T("就绪", "Ready"), Array.Empty<string>());
     static WardrobeRegistrySnapshot s_wardrobeRegistry;
     sealed record WardrobeMenuConfirmation(string Category, string ModId, bool? Visible, string[] Declarations, string[] Names);
@@ -526,40 +532,34 @@ public static class OWOTSAppearanceLab {
         }
     }
 
-    static WardrobeSelectionState CurrentWardrobeState() {
-        s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
-        s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        return WardrobeSaveStore.Freeze(s_wardrobeState ?? LegacyState(outfit, weapon));
-    }
+    static WardrobeSelectionState CurrentWardrobeState() =>
+        WardrobeSaveStore.Freeze(s_wardrobeState ?? WardrobeSelections.Empty());
 
     // "runtime.wardrobe.*" identifies the lab's own physical apply entries, never an
-    // author bundle. Persisting it as a legacy reference poisons the whole selection
-    // state (Resolve reports a missing bundle and every later apply is rejected).
-    static string SanitizeLegacyId(string id) =>
+    // author entry. Persisting it as a selection would poison the whole selection
+    // state (Resolve reports a missing entry and every later apply is rejected).
+    static string SanitizeModId(string id) =>
         string.IsNullOrEmpty(id) || id.StartsWith("runtime.wardrobe.", StringComparison.OrdinalIgnoreCase) ? null : id;
-
-    static WardrobeSelectionState LegacyState(string outfit, string weapon) =>
-        WardrobeSelections.FromLegacy(new SavedAppearance(SanitizeLegacyId(outfit), SanitizeLegacyId(weapon)));
 
     // Drop any previously persisted synthetic runtime reference so an already-poisoned
     // save record self-heals instead of permanently blocking new appearances.
     static WardrobeSelectionState SanitizeSelections(WardrobeSelectionState state) {
         if (state == null) return null;
-        var changed = false;
-        var requested = new Dictionary<WardrobeCategory, WardrobeSelection?>();
-        foreach (var pair in state.Requested) {
-            var selection = pair.Value;
-            if (selection != null && selection.EntryId == null && SanitizeLegacyId(selection.LegacyBundleId) == null) {
+        var changed = state.Requested.Count != Enum.GetValues<WardrobeCategory>().Length;
+        var requested = new Dictionary<WardrobeCategory, string?>();
+        foreach (var category in Enum.GetValues<WardrobeCategory>()) {
+            state.Requested.TryGetValue(category, out var selection);
+            if (selection != null && SanitizeModId(selection) == null) {
                 selection = null;
                 changed = true;
             }
-            requested[pair.Key] = selection;
+            requested[category] = selection;
         }
         return changed ? state with { Requested = requested } : state;
     }
 
-    // Keep the legacy outfit/weapon projection equal to the real requested MODs so a
-    // later FromLegacy fallback never fabricates a bundle from a physical entry id.
+    // Keep the legacy outfit/weapon projection equal to the real requested MODs. It is
+    // display-only for the retained lab endpoints; the wardrobe state never reads it back.
     static void SyncActiveMods(WardrobeSelectionState state) {
         if (state == null || s_wardrobeRegistry == null) return;
         var resolved = WardrobeSelections.Resolve(state, s_wardrobeRegistry);
@@ -844,18 +844,30 @@ public static class OWOTSAppearanceLab {
         }
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        var state = WardrobeSaveStore.Freeze(s_wardrobeState ?? LegacyState(outfit, weapon));
+        var state = WardrobeSaveStore.Freeze(s_wardrobeState ?? WardrobeSelections.Empty());
         WardrobeCompositionResult composition = null;
+        WardrobeTransformStatus transformStatus = null;
         if (s_wardrobeRegistry != null) {
             var resolution = WardrobeSelections.Resolve(state, s_wardrobeRegistry);
             composition = resolution.Composition;
             foreach (var issue in resolution.Issues) issues.Add(issue);
+            // Transform problems never block the normal-state apply; surface them plainly.
+            if (resolution.Transform != null)
+                foreach (var issue in resolution.Transform.Issues) issues.Add(issue);
+            state.Requested.TryGetValue(WardrobeCategory.Transform, out var transformId);
+            string selectedName = null;
+            if (transformId != null && s_wardrobeRegistry.Entries.TryGetValue(transformId, out var transformEntry))
+                selectedName = transformEntry.Name;
+            var locked = s_transformLocks.Current;
+            transformStatus = new WardrobeTransformStatus(transformId, selectedName,
+                resolution.Transform?.Plan?.Policy ?? TransformPolicy.Native, locked?.Policy, locked?.EntryId,
+                s_transformLocks.IsPending(state, s_wardrobeRegistry));
         }
         Volatile.Write(ref s_saveSnapshot, state);
         Volatile.Write(ref s_menu, new MenuState(entries.ToArray(), outfit, weapon,
             s_loadId != null || s_outfitRequest != null || s_transitionRequest != null || s_restoreJob != null || s_wardrobeJob != null ||
                 s_loadCoordinator.HasPending || Volatile.Read(ref s_menuRequest) != null || s_reloadFreeze,
-            s_menuMessage, issues.ToArray(), state, composition, categories));
+            s_menuMessage, issues.ToArray(), state, composition, categories, transformStatus));
     }
 
     static void QueueMenu(string action, string modId = null, string kind = null) {
@@ -888,7 +900,9 @@ public static class OWOTSAppearanceLab {
     static string T(string zh, string en) => ChineseUi ? zh : en;
 
     static string CategoryLabel(WardrobeCategory category) => category switch {
-        WardrobeCategory.Body => T("身体", "Body"), WardrobeCategory.Cloak => T("披风", "Cloak"), WardrobeCategory.Gauntlet => T("护手", "Gauntlet"), _ => T("武器", "Weapon") };
+        WardrobeCategory.Body => T("身体", "Body"), WardrobeCategory.Cloak => T("披风", "Cloak"),
+        WardrobeCategory.Gauntlet => T("护手", "Gauntlet"), WardrobeCategory.Weapon => T("武器", "Weapon"),
+        _ => T("变身", "Transform") };
     static void QueueWardrobe(string modId, bool? visible = null, string[] declarations = null, string category = null) {
         if (s_reloadFreeze) return;
         var values = new Dictionary<string, object> { ["id"] = "ui-" + Guid.NewGuid().ToString("N"),
@@ -983,10 +997,20 @@ public static class OWOTSAppearanceLab {
         try {
             var labels = new List<string>();
             foreach (var category in Enum.GetValues<WardrobeCategory>()) {
-                string selected = null;
-                menu.Composition?.Effective.TryGetValue(category, out selected);
-                bool hidden = menu.Composition?.Suppressed.ContainsKey(category) ?? false;
-                labels.Add(CategoryLabel(category) + T("：", ": ") + (hidden ? T("已隐藏", "Hidden") : AppliedName(menu, selected)));
+                string value;
+                if (category == WardrobeCategory.Transform) {
+                    var transform = menu.Transform;
+                    if (transform?.ExpectedPolicy == TransformPolicy.WardrobeEntry && transform.SelectedId != null)
+                        value = transform.SelectedName ?? transform.SelectedId;
+                    else value = T("游戏原生", "Game native");
+                    if (transform?.PendingNext == true) value += T("（下次变身生效）", " (applies next transformation)");
+                } else {
+                    string selected = null;
+                    menu.Composition?.Effective.TryGetValue(category, out selected);
+                    bool hidden = menu.Composition?.Suppressed.ContainsKey(category) ?? false;
+                    value = hidden ? T("已隐藏", "Hidden") : AppliedName(menu, selected);
+                }
+                labels.Add(CategoryLabel(category) + T("：", ": ") + value);
             }
             ImGui.TextUnformatted(string.Join("   |   ", labels));
         }
@@ -1034,6 +1058,10 @@ public static class OWOTSAppearanceLab {
                         QueueWardrobe(null, shown, category: category.ToString().ToLowerInvariant());
                 } finally { ImGui.EndDisabled(); }
             }
+            if (category == WardrobeCategory.Transform) {
+                ImGui.SameLine();
+                ImGui.TextDisabled(T("选择后更改鬼化外观", "Changes the Oni look"));
+            }
         }
         ImGui.SameLine();
         ImGui.BeginDisabled(menu.Busy || Volatile.Read(ref s_menuRequest) != null);
@@ -1046,10 +1074,20 @@ public static class OWOTSAppearanceLab {
         } finally { ImGui.EndDisabled(); }
         ImGui.SetNextItemWidth(Math.Max(220, ImGui.GetContentRegionAvail().X * 0.55f));
         ImGui.InputText(T("搜索名称或描述", "Search name or description"), ref s_search, 256);
+        if (s_browseCategory == WardrobeCategory.Transform) {
+            ImGui.TextColored(WardrobeGold, T(
+                "变身（鬼化）外观暂未支持：选择会被保存，但不会改变游戏内的鬼化外观。",
+                "Transform (Oni) appearances are not supported yet: the selection is saved but does not change the in-game Oni appearance."));
+        }
         string active = null, requestedId = null, blocker = null;
-        menu.Composition?.Effective.TryGetValue(s_browseCategory, out active);
-        menu.Composition?.Requested.TryGetValue(s_browseCategory, out requestedId);
-        menu.Composition?.Suppressed.TryGetValue(s_browseCategory, out blocker);
+        if (s_browseCategory == WardrobeCategory.Transform) {
+            active = menu.Transform?.SelectedId;
+            requestedId = active;
+        } else {
+            menu.Composition?.Effective.TryGetValue(s_browseCategory, out active);
+            menu.Composition?.Requested.TryGetValue(s_browseCategory, out requestedId);
+            menu.Composition?.Suppressed.TryGetValue(s_browseCategory, out blocker);
+        }
         if (blocker != null) {
             ImGui.TextColored(WardrobeGold, blocker == "@user" ? T("显示开关已关闭，外观选择仍保留。", "Visibility is off; the selection is kept.") : T("作者声明隐藏此部位：", "Author declares this part hidden: ") + AppliedName(menu, blocker));
             if (blocker != "@user" && (s_browseCategory == WardrobeCategory.Cloak || s_browseCategory == WardrobeCategory.Gauntlet)) {
@@ -1100,7 +1138,8 @@ public static class OWOTSAppearanceLab {
                                             s_focusedEntry = entry.Id; focused = entry;
                                         }
                                     } finally { if (s_cardMode) ImGui.PopStyleVar(); }
-                                    if (entry.Id == active) ImGui.TextColored(WardrobeGreen, T("已应用", "Applied"));
+                                    if (entry.Id == active) ImGui.TextColored(WardrobeGreen,
+                                        s_browseCategory == WardrobeCategory.Transform ? T("已选择", "Selected") : T("已应用", "Applied"));
                                     else if (entry.Id == requestedId && blocker != null) ImGui.TextColored(WardrobeGold, T("已选择 · 已隐藏", "Selected · Hidden"));
                                     else if (entry.Id == s_focusedEntry) ImGui.TextColored(WardrobeGold, T("预览中", "Previewing"));
                                     else ImGui.TextDisabled(T("单击预览", "Click to preview"));
@@ -1134,14 +1173,19 @@ public static class OWOTSAppearanceLab {
                     bool applied = active == focused.Id;
                     ImGui.BeginDisabled(applied || menu.Busy || Volatile.Read(ref s_menuRequest) != null);
                     try {
-                        if (WardrobeButton(applied ? T("已应用此外观", "Already applied") : menu.Busy ? T("正在切换…", "Switching…") : T("应用此外观", "Apply this appearance"), true,
+                        string applyLabel = s_browseCategory == WardrobeCategory.Transform
+                            ? applied ? T("已选择此外观", "Already selected") : T("选择此外观", "Select this appearance")
+                            : applied ? T("已应用此外观", "Already applied") : menu.Busy ? T("正在切换…", "Switching…") : T("应用此外观", "Apply this appearance");
+                        if (WardrobeButton(applyLabel, true,
                             new System.Numerics.Vector2(-1, 40))) QueueWardrobe(focused.Id);
                     } finally { ImGui.EndDisabled(); }
                     ImGui.TextDisabled(T("也可双击左侧条目应用", "Or double-click an entry to apply"));
                 }
                 ImGui.BeginDisabled(requestedId == null || menu.Busy || Volatile.Read(ref s_menuRequest) != null);
                 try {
-                    if (ImGui.Button(T("恢复原版", "Restore native ") + CategoryLabel(s_browseCategory), new System.Numerics.Vector2(-1, 36)))
+                    if (ImGui.Button(s_browseCategory == WardrobeCategory.Transform
+                        ? T("不指定变身外观", "No wardrobe transformation")
+                        : T("恢复原版", "Restore native ") + CategoryLabel(s_browseCategory), new System.Numerics.Vector2(-1, 36)))
                         QueueWardrobe(null);
                 } finally { ImGui.EndDisabled(); }
             } finally { ImGui.EndTable(); }
@@ -1430,6 +1474,171 @@ public static class OWOTSAppearanceLab {
         return resolved.Composition.Effective.TryGetValue(WardrobeCategory.Body, out var modId) ? modId : null;
     }
 
+    // Transform skeleton: while the Oni transformation is active, apply the same per-joint
+    // rest delta to the Oni object joints. Entries stay empty (and harmless) when the Oni
+    // hierarchy does not expose the applied skeleton's joint names.
+    static List<JointRebaseEntry> s_oniRebaseEntries;
+    static bool s_oniRebaseWasOn;
+
+    // During a transformation the wardrobe hides the normal-state meshes itself after a
+    // short delay, instead of waiting for the game's dissolve (which some MOD materials
+    // break). The hidden set is restored on exit unless another feature owns the part.
+    static readonly Dictionary<ulong, ManagedObject> EmptyOniHidden = new Dictionary<ulong, ManagedObject>();
+    static Dictionary<ulong, ManagedObject> s_oniHiddenNormal = EmptyOniHidden;
+    static bool s_oniHideNormalWasOn;
+    static long s_oniHideNormalStart;
+
+    static void ApplyOniNormalHidden(HashSet<ulong> targets, Dictionary<ulong, via.GameObject> objects) {
+        var next = new Dictionary<ulong, ManagedObject>();
+        foreach (var pair in objects) next[pair.Key] = ManagedObject.FromAddress(pair.Key).Globalize();
+        var previous = Interlocked.Exchange(ref s_oniHiddenNormal, next);
+        foreach (var pair in previous) { try { pair.Value.Release(); } catch { } }
+        s_ownVisibilityWrite = true;
+        try {
+            foreach (var obj in objects.Values) if (Alive(obj) && obj.DrawSelf) obj.DrawSelf = false;
+        } finally { s_ownVisibilityWrite = false; }
+    }
+
+    static void RestoreOniNormalHidden() {
+        var previous = Interlocked.Exchange(ref s_oniHiddenNormal, EmptyOniHidden);
+        foreach (var pair in previous) {
+            try {
+                var obj = pair.Value.As<via.GameObject>();
+                if (Alive(obj) && obj.Valid && !Volatile.Read(ref s_hiddenObjects).ContainsKey(pair.Key)) obj.DrawSelf = true;
+            } finally { pair.Value.Release(); }
+        }
+    }
+
+    static void PollOniHideNormal(app.cPlayerGameObjectSupporter supporter, app.cPlayerCharacterEntity entity) {
+        var oni = Alive(entity) ? entity.OniSupporter : null;
+        if (!Alive(oni)) return;
+        bool oniOn = oni.IsOniModeOn;
+        if (oniOn && !s_oniHideNormalWasOn) s_oniHideNormalStart = Environment.TickCount64;
+        if (oniOn && Environment.TickCount64 >= s_oniHideNormalStart + 100) {
+            var objects = new Dictionary<ulong, via.GameObject>();
+            foreach (var name in new[] { "BODY", "HEAD", "HAIR" })
+                CollectPartMeshes(supporter.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(name)), objects);
+            ApplyOniNormalHidden(new HashSet<ulong>(objects.Keys), objects);
+        }
+        if (!oniOn && s_oniHideNormalWasOn) RestoreOniNormalHidden();
+        s_oniHideNormalWasOn = oniOn;
+    }
+
+    // Runtime Oni appearance: swap the live Oni renderers to the selected transform
+    // entry's private mesh/material. Uses the same AfterImage model-change lifecycle
+    // as the retained mesh probe; the resident prefab is never replaced.
+    static readonly List<MeshSwap> s_oniSwaps = new List<MeshSwap>();
+    static app.AfterImageController s_oniAfterImage;
+    static string s_oniAppearanceApplied;
+
+    static void ApplyOniAppearance(app.cPlayerGameObjectSupporter supporter, app.cPlayerCharacterEntity entity, string entryId) {
+        if (s_oniSwaps.Count > 0) return;
+        var registry = s_wardrobeRegistry;
+        if (registry == null || !registry.Entries.TryGetValue(entryId, out var entry)) return;
+        var info = Manager().getControllingPlayerInfo();
+        var actor = Alive(info) ? info.Object : null;
+        var afterImage = Alive(actor) ? AfterImage(actor) : null;
+        if (!Alive(afterImage)) return;
+        var prepared = new List<MeshSwap>();
+        foreach (var root in entry.Parts) {
+            if (string.IsNullOrEmpty(root.Mesh)) continue;
+            app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT role;
+            if (root.Part == "ONI_BODY") role = app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.BODY_ONI_CHANGE;
+            else if (root.Part == "ONI_HEAD") role = app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HEAD_ONI_CHANGE;
+            else continue;
+            var obj = supporter.getGameObject(role);
+            if (!Alive(obj)) continue;
+            var component = obj.getComponent(via.render.Mesh.REFType.RuntimeType.As<_System.Type>());
+            if (!Alive(component)) continue;
+            var mesh = ManagedObject.FromAddress(((IProxyable)component).GetAddress()).As<via.render.Mesh>();
+            var original = mesh.getMesh();
+            if (!Alive(original)) continue;
+            var meshHolder = LoadHolder("via.render.MeshResource", "via.render.MeshResourceHolder", root.Mesh);
+            ManagedObject materialHolder = string.IsNullOrEmpty(root.Material) ? null
+                : LoadHolder("via.render.MeshMaterialResource", "via.render.MeshMaterialResourceHolder", root.Material);
+            prepared.Add(new MeshSwap { Component = mesh, OriginalMesh = original, OriginalMaterial = mesh.Material,
+                ModMesh = meshHolder.As<via.render.MeshResourceHolder>(),
+                ModMaterial = materialHolder?.As<via.render.MeshMaterialResourceHolder>(),
+                MeshOwner = meshHolder, MaterialOwner = materialHolder, OriginalPath = original.ResourcePath });
+        }
+        if (prepared.Count == 0) return;
+        s_oniAfterImage = afterImage;
+        afterImage.onChangeModelStart();
+        try {
+            foreach (var swap in prepared) {
+                s_oniSwaps.Add(swap);
+                swap.Component.setMesh(swap.ModMesh);
+                if (swap.ModMaterial != null) swap.Component.Material = swap.ModMaterial;
+            }
+        } catch { RestoreOniAppearance(); throw; }
+        finally { if (Alive(afterImage)) afterImage.onChangeModelFinish(); }
+        s_oniAppearanceApplied = entryId;
+    }
+
+    static void RestoreOniAppearance() {
+        if (s_oniSwaps.Count == 0) return;
+        var afterImage = s_oniAfterImage;
+        if (Alive(afterImage)) afterImage.onChangeModelStart();
+        try {
+            foreach (var swap in s_oniSwaps) {
+                if (!Alive(swap.Component) || !Alive(swap.Component.GameObject)) continue;
+                var current = swap.Component.getMesh();
+                if (!Alive(current) || !string.Equals(current.ResourcePath, swap.ModMesh.ResourcePath, StringComparison.OrdinalIgnoreCase)) continue;
+                swap.Component.setMesh(swap.OriginalMesh);
+                if (swap.OriginalMaterial != null) swap.Component.Material = swap.OriginalMaterial;
+            }
+        } finally { if (Alive(afterImage)) afterImage.onChangeModelFinish(); }
+        s_oniSwaps.Clear();
+        s_oniAfterImage = null;
+        s_oniAppearanceApplied = null;
+    }
+
+    static void PollOniRebase(app.cPlayerGameObjectSupporter supporter, app.cPlayerCharacterEntity entity) {
+        var oni = Alive(entity) ? entity.OniSupporter : null;
+        if (!Alive(oni)) return;
+        bool oniOn = oni.IsOniModeOn;
+        if (oniOn && !s_oniRebaseWasOn) {
+            // Freeze this transformation's plan first; later expectation changes only
+            // affect the next one.
+            try { if (s_wardrobeState != null && s_wardrobeRegistry != null) s_transformLocks.Lock(s_wardrobeState, s_wardrobeRegistry); } catch { }
+            var locked = s_transformLocks.Current;
+            // The transform entry owns its own skeleton declaration; the applied normal
+            // body is only a fallback for entries without one.
+            WardrobeSkeleton skeleton = null;
+            if (locked != null && locked.Policy == TransformPolicy.WardrobeEntry && locked.EntryId != null &&
+                s_wardrobeRegistry != null && s_wardrobeRegistry.Entries.TryGetValue(locked.EntryId, out var transformEntry))
+                skeleton = transformEntry.Skeleton;
+            if (skeleton == null) skeleton = EffectiveBodySkeleton();
+            if (skeleton != null) {
+                var bodyType = app.cPlayerGameObjectSupporter.convertObjTypeToPartsType(app.PlayerPartsDef.PARTS_TYPE.BODY);
+                var body = supporter.getGameObject(bodyType);
+                var entries = new List<JointRebaseEntry>();
+                foreach (var role in new[] { app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HEAD_ONI_CHANGE,
+                                             app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.BODY_ONI_CHANGE }) {
+                    var obj = supporter.getGameObject(role);
+                    if (!Alive(obj)) continue;
+                    var part = BuildRebaseEntries(obj.Transform, Alive(body) ? body.Transform : obj.Transform, skeleton);
+                    if (part != null) entries.AddRange(part);
+                }
+                s_oniRebaseEntries = entries.Count > 0 ? entries : null;
+            }
+            if (locked != null && locked.Policy == TransformPolicy.WardrobeEntry && locked.EntryId != null) {
+                // Runtime mesh/material swap is DISABLED (2026-09-20): the live Oni swap
+                // crashed the game (reframework_crash.dmp) with the transformation model
+                // invisible. Keep the validated parts (hide-normal + skeleton rebase) and
+                // re-open this only after the AfterImage/material lifecycle is proven safe.
+                // try { ApplyOniAppearance(supporter, entity, locked.EntryId); } catch { }
+            }
+        }
+        if (!oniOn && s_oniRebaseWasOn) {
+            RestoreRebase(s_oniRebaseEntries);
+            s_oniRebaseEntries = null;
+            try { RestoreOniAppearance(); } catch { }
+        }
+        s_oniRebaseWasOn = oniOn;
+        if (oniOn) ApplyRebase(s_oniRebaseEntries);
+    }
+
     // Late phase (same point the plugin already uses for final visibility
     // reassertion): the engine's pose composition has run, so the root joint
     // rest override is reflected in the frame.  Writing this on UpdateMotion
@@ -1438,6 +1647,15 @@ public static class OWOTSAppearanceLab {
     static void MotionRebase() {
         if (s_stopped || s_reloadFreeze) return;
         try {
+            // Transform runtime handling is PAUSED (2026-09-20, user decision): the fifth
+            // category is marked unsupported in the UI and the game keeps its native Oni
+            // behaviour. The implementation below is retained for the next iteration.
+            // try {
+            //     var oniInfo = API.GetManagedSingletonT<app.PlayerManager>().getControllingPlayerInfo();
+            //     var oniEntity = Alive(oniInfo) ? oniInfo.CharacterEntity : null;
+            //     var oniSupporter = Alive(oniEntity) ? oniEntity.GameObjectSupporter : null;
+            //     if (UsableSupporter(oniSupporter)) { PollOniRebase(oniSupporter, oniEntity); PollOniHideNormal(oniSupporter, oniEntity); }
+            // } catch { }
             if (!Volatile.Read(ref s_preferences).IndependentSkeleton) { RebaseRestore(); return; }
             if (EffectiveBodySkeleton() == null) { RebaseRestore(); return; }
             if (s_rebaseEntries == null) RebaseTryStart();
@@ -1572,11 +1790,13 @@ public static class OWOTSAppearanceLab {
     public static void Update() {
         Volatile.Write(ref s_adapterGameThreadId, Environment.CurrentManagedThreadId);
         AuditVisibility("UpdateBehavior.Post.BeforeHide");
+        if (!s_stopped) SampleOniTrace();
         if (!s_stopped && !s_reloadFreeze && (s_hiddenParts.Count > 0 || s_hiddenObjects.Count > 0)) PollVisibility();
         if (!s_stopped && !s_reloadFreeze && s_visibilityProbeRequest != null) PollVisibilityProbe();
         if (s_stopped || s_dir == null || Environment.TickCount64 < s_nextPoll) return;
         s_nextPoll = Environment.TickCount64 + 250;
         RegisterAdapterBridge();
+        PollOniHoldTest();
         if (s_reloadResume != null) PollReloadResume();
         if (s_wardrobeJob != null) {
             var pause = API.GetManagedSingletonT<app.PauseManager>();
@@ -1707,6 +1927,13 @@ public static class OWOTSAppearanceLab {
                 "registry_select" => BeginRegistered(request, id),
                 "registry_clear" => BeginTransition(id, null, 0, ReadKind(request)),
                 "trace_model_changes" => TraceModelChanges(request),
+                "oni_probe" => OniProbe(request),
+                "oni_hold_test" => OniHoldTest(request),
+                "oni_resident" => OniResidentProbe(),
+                "oni_skeleton" => OniSkeletonProbe(),
+                "oni_export_bind" => OniExportBind(),
+                "oni_resident_trace" => TraceResident(request),
+                "oni_resident_reload" => OniResidentReload(request),
                 "trace_save_loads" => TraceSaveLoads(request),
                 "appearance_persistence" => ConfigurePersistence(request),
                 "appearance_restore_preview" => PreviewSavedAppearance(),
@@ -1845,8 +2072,7 @@ public static class OWOTSAppearanceLab {
     static object WardrobeStatus() {
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        var state = WardrobeSaveStore.Freeze(s_wardrobeState ??
-            LegacyState(outfit, weapon));
+        var state = WardrobeSaveStore.Freeze(s_wardrobeState ?? WardrobeSelections.Empty());
         // Snapshot only: do not refresh registry/icons, commit saves or start native work.
         var resolution = s_wardrobeRegistry == null ? null : WardrobeSelections.Resolve(state, s_wardrobeRegistry);
         return new {
@@ -1991,12 +2217,29 @@ public static class OWOTSAppearanceLab {
         s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit);
         s_wardrobeRegistry = registry;
         s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon);
-        var state = s_wardrobeState ?? LegacyState(outfit, weapon);
+        var state = s_wardrobeState ?? WardrobeSelections.Empty();
         var category = request.GetProperty("category").GetString() switch {
             "body" => WardrobeCategory.Body, "cloak" => WardrobeCategory.Cloak,
             "gauntlet" => WardrobeCategory.Gauntlet, "weapon" => WardrobeCategory.Weapon,
+            "transform" => WardrobeCategory.Transform,
             _ => throw new InvalidOperationException("Unknown wardrobe category") };
         bool showRequest = request.TryGetProperty("visible", out var visible);
+        if (category == WardrobeCategory.Transform) {
+            // The transform expectation is pure data: it never rebuilds the normal-state
+            // model and the active transformation keeps its locked snapshot until the
+            // next one starts. Physical Oni resource work is gated on the remaining P0 validation.
+            string transformChoice = null;
+            if (request.TryGetProperty("modId", out var transformValue) && transformValue.ValueKind == JsonValueKind.String)
+                transformChoice = transformValue.GetString();
+            state = WardrobeSelections.Choose(state, category, transformChoice, registry);
+            s_wardrobeState = state;
+            Volatile.Write(ref s_saveSnapshot, WardrobeSaveStore.Freeze(state));
+            PublishMenu();
+            state.Requested.TryGetValue(WardrobeCategory.Transform, out var transformSelection);
+            return new { phase = "transform_expected",
+                selected = transformSelection, pendingNext = s_transformLocks.IsPending(state, registry),
+                message = T("变身设置已保存；将在下次变身时生效。", "Transformation setting saved; it applies to the next transformation.") };
+        }
         bool requestForce = false;
         if (showRequest) {
             state = WardrobeSelections.SetVisible(state, category, visible.GetBoolean());
@@ -2263,6 +2506,23 @@ public static class OWOTSAppearanceLab {
         }
     }
 
+    // One global DrawSelf interceptor forces declared hidden parts false.
+    static void EnsureVisibilityHook() {
+        if (s_visibilityHookInstalled) return;
+        var method = via.GameObject.REFType.GetMethod("set_DrawSelf");
+        if (method == null) throw new InvalidOperationException("Native DrawSelf setter unavailable");
+        MethodHook.Create(method, false).AddPre(args => {
+            // Native callbacks only touch managed scalar state, never resolve game objects here.
+            if (s_stopped || s_reloadFreeze || s_ownVisibilityWrite || args.Length <= 2) return PreHookResult.Continue;
+            if (Volatile.Read(ref s_hiddenObjects).TryGetValue(args[1], out var target)) {
+                Volatile.Write(ref target.RequestedDraw, args[2] != 0 ? 1 : 0);
+                args[2] = 0;
+            }
+            return PreHookResult.Continue;
+        });
+        s_visibilityHookInstalled = true;
+    }
+
     static object SetVisibility(JsonElement request) {
         if (s_visibilityProbeRequest != null) throw new InvalidOperationException("Finite probe is active");
         var desired = new HashSet<string>();
@@ -2275,20 +2535,7 @@ public static class OWOTSAppearanceLab {
         if (desired.Contains("CLOAK")) { desired.Add("CLOAK_CLOSE"); desired.Add("CLOAK_OPEN"); }
         if (desired.Count > 0) {
             VisibilitySupporter(); // Do not replace a working plan while the player is unavailable.
-            if (!s_visibilityHookInstalled) {
-                var method = via.GameObject.REFType.GetMethod("set_DrawSelf");
-                if (method == null) throw new InvalidOperationException("Native DrawSelf setter unavailable");
-                MethodHook.Create(method, false).AddPre(args => {
-                    // Native callbacks only touch managed scalar state, never resolve game objects here.
-                    if (!s_stopped && !s_reloadFreeze && !s_ownVisibilityWrite && args.Length > 2 &&
-                        Volatile.Read(ref s_hiddenObjects).TryGetValue(args[1], out var target)) {
-                        Volatile.Write(ref target.RequestedDraw, args[2] != 0 ? 1 : 0);
-                        args[2] = 0;
-                    }
-                    return PreHookResult.Continue;
-                });
-                s_visibilityHookInstalled = true;
-            }
+            EnsureVisibilityHook();
         }
         s_hiddenParts = desired;
         PollVisibility();
@@ -2668,10 +2915,27 @@ public static class OWOTSAppearanceLab {
     static WardrobeRegistrySnapshot ReadWardrobeRegistry(string directory) {
         var snapshot = WardrobeRegistry.ReadDirectory(directory);
         if (s_nativeEntries.Count == 0 && Environment.TickCount64 >= s_nextNativeScan) RefreshNativeEntries();
-        if (s_nativeEntries.Count == 0) return snapshot;
         var entries = new Dictionary<string, WardrobeManifestEntry>(snapshot.Entries, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in s_nativeEntries) if (!entries.ContainsKey(pair.Key)) entries.Add(pair.Key, pair.Value);
+        RegisterBuiltinTransformEntry(entries);
         return snapshot with { Entries = entries };
+    }
+
+    // The game's default Oni look is offered as a built-in transform entry, so an explicit
+    // selection can mean "use the game's own Oni appearance" while the wardrobe switch is on.
+    // R5: names prefer the game's localized text; this fallback is used until P0 confirms one.
+    static void RegisterBuiltinTransformEntry(Dictionary<string, WardrobeManifestEntry> entries) {
+        const string id = "native.transform.default";
+        if (entries.ContainsKey(id)) return;
+        var rules = new WardrobeRuleEntry(id, WardrobeCategory.Transform,
+            new[] { "ONI_BODY", "ONI_HEAD" }, Array.Empty<string>(), Array.Empty<WardrobeCategory>());
+        WardrobeComposition.Validate(rules);
+        var parts = new List<WardrobePart> {
+            new("ONI_BODY", "", "natives/stm/gamedesign/action/player/_prefab/onibody.pfb"),
+            new("ONI_HEAD", "", "natives/stm/gamedesign/action/player/_prefab/onihead.pfb") };
+        entries[id] = new WardrobeManifestEntry(rules, T("原版鬼化", "Native Oni"), parts.AsReadOnly(),
+            T("游戏默认的鬼化外观。", "The game's default Oni transformation appearance."),
+            "", null, "builtin");
     }
 
     // Read-only cloth/Chain2 snapshot of the cloak pieces on both instances, used to
@@ -3507,7 +3771,10 @@ public static class OWOTSAppearanceLab {
                 if (saved.Error != null) throw new InvalidOperationException(saved.Error);
                 // Older builds could persist a synthetic runtime reference; drop it so a
                 // poisoned record does not permanently block every later appearance apply.
-                var choices = SanitizeSelections(saved.Record?.Choices) ?? WardrobeSelections.FromLegacy(new SavedAppearance(null, null));
+                var choices = SanitizeSelections(saved.Record?.Choices) ?? WardrobeSelections.Empty();
+                // A load rebuilds the character; the previous transformation snapshot no
+                // longer describes a live object and must not leak into the next one.
+                s_transformLocks.Clear();
                 var plan = WardrobeSelections.Resolve(choices, ReadWardrobeRegistry(Path.Combine(s_dir, "mods")));
                 s_restoreJob = new RestoreJob { Key = key, Ticket = ticket, Choices = choices, Clock = new AppearanceOperationClock(Environment.TickCount64) };
                 s_restoreUnresolved = true;
@@ -3945,7 +4212,7 @@ public static class OWOTSAppearanceLab {
             s_activeModId = s_pendingModId;
             // The four-category flow passes synthetic "runtime.wardrobe.*" apply entries
             // here; only real author ids may enter the legacy outfit/weapon projection.
-            if (SanitizeLegacyId(s_pendingModId) != null) s_activeMods[s_pendingKind] = s_pendingModId;
+            if (SanitizeModId(s_pendingModId) != null) s_activeMods[s_pendingKind] = s_pendingModId;
             s_outfitParts.AddRange(s_preloadParts);
             s_preloadParts.Clear();
             s_outfitRequest = null;
@@ -4012,6 +4279,403 @@ public static class OWOTSAppearanceLab {
         else s_activeMods.Remove(kind.Value);
         s_activeModId = s_activeMods.TryGetValue(AppearanceKind.Outfit, out var outfit) ? outfit :
             s_activeMods.TryGetValue(AppearanceKind.Weapon, out var weapon) ? weapon : null;
+    }
+
+    // --- P0 Oni lifecycle observation (read-only) --------------------------------
+    // Records object identity, resource paths, visibility and model IDs for the Oni
+    // change roles and the normal-state roles. It never writes visibility, models,
+    // resident ownership or gameplay state; samples go to oni-trace.json for the P0
+    // acceptance record. The player triggers the transformation through normal play.
+    static bool s_oniTraceEnabled;
+    static long s_oniTraceDeadline;
+    static long s_oniTraceNext;
+    static readonly object s_oniTraceLock = new object();
+    static readonly List<object> s_oniTrace = new List<object>();
+
+    static string OniTracePath() => Path.Combine(s_dir, "oni-trace.json");
+
+    static object OniProbeSnapshot() {
+        object equipped = null, supporterAddress = null, oniState = null, bodySetting = null;
+        bool? needOni = null;
+        var modelIds = new List<int>();
+        var objects = new List<object>();
+        try {
+            var info = Manager().getControllingPlayerInfo();
+            var entity = Alive(info) ? info.CharacterEntity : null;
+            var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            if (UsableSupporter(supporter)) {
+                equipped = Equipped(Manager());
+                supporterAddress = "0x" + ((IProxyable)supporter).GetAddress().ToString("X");
+                try { needOni = supporter.isNeedOniModel(); } catch { }
+                try { for (int i = 0; i < 13; i++) modelIds.Add(supporter._ModelIDs[i]); } catch { }
+                try {
+                    var setting = supporter.getCurrentBodySetting();
+                    if (Alive(setting)) bodySetting = new { invisibleOniModel = setting.IsInvisibleOniModel,
+                        invisibleHead = setting.IsInvisibleHead, visibleCloak = setting.IsVisibleCloak };
+                } catch (Exception e) { bodySetting = new { error = e.Message }; }
+                try {
+                    var oni = entity.OniSupporter;
+                    if (Alive(oni)) {
+                        bool? oniOn = null, infoOn = null;
+                        float? energy = null, gauge = null;
+                        try { oniOn = oni.IsOniModeOn; } catch { }
+                        try { energy = oni.OniChangeEnergy; } catch { }
+                        try {
+                            var changeInfo = oni.OniChangeInfo;
+                            if (changeInfo != null) { infoOn = changeInfo.On; gauge = changeInfo.Guage; }
+                        } catch { }
+                        oniState = new { on = oniOn, energy, infoOn, gauge,
+                            address = "0x" + ((IProxyable)oni).GetAddress().ToString("X") };
+                    }
+                } catch (Exception e) { oniState = new { error = e.Message }; }
+            }
+            foreach (var role in new[] { "BODY", "HEAD", "HAIR", "BODY_ONI_CHANGE", "HEAD_ONI_CHANGE", "HAIR_ONI_CHANGE" }) {
+                try {
+                    var part = Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(role);
+                    var obj = UsableSupporter(supporter) ? supporter.getGameObject(part) : null;
+                    bool? visible = null;
+                    try { if (UsableSupporter(supporter)) visible = supporter.isPartsVisible(part); } catch { }
+                    objects.Add(new { role, visible, value = DescribeObject(obj) });
+                } catch (Exception e) { objects.Add(new { role, error = e.Message }); }
+            }
+        } catch (Exception e) { objects.Add(new { role = "player", error = e.Message }); }
+        var locked = s_transformLocks.Current;
+        return new { at = DateTimeOffset.UtcNow, equipped, supporter = supporterAddress, needOniModel = needOni,
+            bodySetting, oni = oniState, modelIds = modelIds.ToArray(),
+            transformLocked = locked == null ? null : new { policy = locked.Policy.ToString(), entry = locked.EntryId, hidden = locked.HiddenParts },
+            hiddenParts = new List<string>(s_hiddenParts), objects };
+    }
+
+    // --- P0-B controlled hold test (state-modifying, explicit, time-limited) -----
+    // Hides the three ONI_CHANGE objects during a transformation and records whether
+    // the game resets them, whether the normal-state model stays visible, and whether
+    // the exit leaves any residue. This is a controlled diagnostic, not a shipped
+    // feature: it only runs while explicitly enabled and expires by itself.
+    static readonly string[] OniHoldParts = { "BODY_ONI_CHANGE", "HEAD_ONI_CHANGE", "HAIR_ONI_CHANGE" };
+    static volatile bool s_oniHoldTest;
+    static long s_oniHoldDeadline;
+    static bool s_oniHoldWasOn, s_oniHoldApplied;
+    static long s_oniHoldApplies, s_oniHoldResets, s_oniHoldSamples;
+    static readonly object s_oniHoldLock = new object();
+    static readonly List<object> s_oniHoldLog = new List<object>();
+
+    static string OniHoldPath() => Path.Combine(s_dir, "oni-hold-test.json");
+
+    static void LogOniHold(object entry) {
+        lock (s_oniHoldLock) {
+            if (s_oniHoldLog.Count >= 2000) s_oniHoldLog.RemoveAt(0);
+            s_oniHoldLog.Add(new { at = DateTimeOffset.UtcNow, entry });
+        }
+    }
+
+    static void StopOniHold(string reason) {
+        if (!s_oniHoldTest) return;
+        s_oniHoldTest = false;
+        LogOniHold(new { phase = "stopped", reason, applies = s_oniHoldApplies, resets = s_oniHoldResets });
+        WriteOniHoldLog();
+    }
+
+    static void WriteOniHoldLog() {
+        try {
+            object payload;
+            lock (s_oniHoldLock) payload = new { writtenAt = DateTimeOffset.UtcNow,
+                applies = s_oniHoldApplies, resets = s_oniHoldResets, samples = s_oniHoldLog.ToArray() };
+            File.WriteAllText(OniHoldPath(), JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        } catch (Exception e) { s_menuMessage = T("P0-B 记录写入失败：", "Failed to write the P0-B record: ") + e.Message; }
+    }
+
+    static object OniHoldTest(JsonElement request) {
+        bool enabled = request.GetProperty("enabled").GetBoolean();
+        int seconds = request.TryGetProperty("seconds", out var secondsValue)
+            ? Math.Clamp(secondsValue.GetInt32(), 5, 600) : 180;
+        if (!enabled) { StopOniHold("requested"); return new { enabled = false, file = OniHoldPath() }; }
+        lock (s_oniHoldLock) {
+            s_oniHoldTest = true;
+            s_oniHoldDeadline = Environment.TickCount64 + seconds * 1000L;
+            s_oniHoldWasOn = false; s_oniHoldApplied = false;
+            s_oniHoldApplies = 0; s_oniHoldResets = 0; s_oniHoldSamples = 0;
+            s_oniHoldLog.Clear();
+        }
+        LogOniHold(new { phase = "armed", seconds });
+        return new { enabled = true, seconds, file = OniHoldPath(),
+            parts = OniHoldParts, note = "controlled visibility writes while a transformation is active" };
+    }
+
+    static float? SafeOniEnergy(app.cPlayerOniSupporter oni) {
+        try { return oni.OniChangeEnergy; } catch { return null; }
+    }
+
+    static void PollOniHoldTest() {
+        if (!s_oniHoldTest) return;
+        if (Environment.TickCount64 > s_oniHoldDeadline) { StopOniHold("timeout"); return; }
+        try {
+            var info = Manager().getControllingPlayerInfo();
+            var entity = Alive(info) ? info.CharacterEntity : null;
+            var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            var oni = Alive(entity) ? entity.OniSupporter : null;
+            if (!UsableSupporter(supporter) || !Alive(oni)) return;
+            bool oniOn = oni.IsOniModeOn;
+            s_oniHoldSamples++;
+            if (oniOn && !s_oniHoldWasOn) {
+                s_oniHoldApplied = false;
+                LogOniHold(new { phase = "entered", energy = SafeOniEnergy(oni) });
+            }
+            if (!oniOn && s_oniHoldWasOn) {
+                LogOniHold(new { phase = "exited", energy = SafeOniEnergy(oni), applies = s_oniHoldApplies, resets = s_oniHoldResets });
+                s_oniHoldApplied = false;
+            }
+            s_oniHoldWasOn = oniOn;
+            if (!oniOn) return;
+            bool reapplied = false;
+            foreach (var name in OniHoldParts) {
+                var part = Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(name);
+                var obj = supporter.getGameObject(part);
+                bool draw = Alive(obj) && obj.DrawSelf;
+                if (!draw) continue;
+                if (s_oniHoldApplied) s_oniHoldResets++;
+                if (Alive(obj)) { obj.DrawSelf = false; s_oniHoldApplies++; reapplied = true; }
+            }
+            s_oniHoldApplied = true;
+            LogOniHold(new { phase = "hold", reapplied,
+                body = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.BODY),
+                head = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HEAD),
+                hair = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HAIR),
+                oniBody = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.BODY_ONI_CHANGE),
+                oniHead = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HEAD_ONI_CHANGE),
+                oniHair = supporter.isPartsVisible(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HAIR_ONI_CHANGE),
+                energy = SafeOniEnergy(oni) });
+        } catch (Exception e) { LogOniHold(new { phase = "error", error = e.Message }); }
+    }
+
+    // P0-C-2 read-only probe: resident prefab table and the live Oni object resources.
+    // The catalog's _ResidentList is the game's own store; this endpoint never writes it.
+    // P0-C-2 resident registration trace: read-only observation of the game's own
+    // addPlayerResidentModel/releasePlayerResidentModel calls (load/scene rebuild).
+    static bool s_residentTraceInstalled;
+    static volatile bool s_residentTracing;
+    static readonly object s_residentTraceLock = new object();
+    static readonly List<object> s_residentTrace = new List<object>();
+
+    static object TraceResident(JsonElement request) {
+        bool enabled = request.GetProperty("enabled").GetBoolean();
+        if (enabled && !s_residentTraceInstalled) {
+            var add = NamedMethod(app.PlayerManager.REFType, "addPlayerResidentModel");
+            var release = NamedMethod(app.PlayerManager.REFType, "releasePlayerResidentModel");
+            if (add == null || release == null) throw new InvalidOperationException("Resident methods unavailable");
+            MethodHook.Create(add, false).AddPre(args => {
+                if (s_residentTracing && args.Length > 3) {
+                    lock (s_residentTraceLock) {
+                        if (s_residentTrace.Count >= 256) s_residentTrace.RemoveAt(0);
+                        s_residentTrace.Add(new { at = DateTimeOffset.UtcNow, call = "add",
+                            type = (int)args[2], gameObject = "0x" + args[3].ToString("X") });
+                    }
+                }
+                return PreHookResult.Continue;
+            });
+            MethodHook.Create(release, false).AddPre(args => {
+                if (s_residentTracing && args.Length > 2) {
+                    lock (s_residentTraceLock) {
+                        if (s_residentTrace.Count >= 256) s_residentTrace.RemoveAt(0);
+                        s_residentTrace.Add(new { at = DateTimeOffset.UtcNow, call = "release", type = (int)args[2] });
+                    }
+                }
+                return PreHookResult.Continue;
+            });
+            s_residentTraceInstalled = true;
+        }
+        s_residentTracing = enabled;
+        lock (s_residentTraceLock) return new { enabled, calls = s_residentTrace.ToArray() };
+    }
+
+    // P0-C-2 controlled resident reload: re-registers one resident on the player root so
+    // the next creation uses the current _ResidentList entry. Controlled state modification.
+    static object OniResidentReload(JsonElement request) {
+        var manager = Manager();
+        var info = manager.getControllingPlayerInfo();
+        var playerRoot = Alive(info) ? info.Object : null;
+        if (!Alive(playerRoot)) throw new InvalidOperationException("Player root unavailable");
+        var list = manager.Catalog._ResidentList;
+        var type = app.PlayerResidentPrefabID.TYPE_Fixed.ONI_BODY;
+        int id = (int)type;
+        if (list == null || !list.ContainsKey(id)) throw new InvalidOperationException("ONI_BODY resident missing");
+        var original = list[id];
+        bool released = manager.releasePlayerResidentModel(type);
+        bool added = manager.addPlayerResidentModel(type, playerRoot, null);
+        return new { released, added,
+            originalPath = Alive(original) ? original.Path : null,
+            currentPath = Alive(list[id]) ? list[id].Path : null,
+            playerRoot = "0x" + ((IProxyable)playerRoot).GetAddress().ToString("X") };
+    }
+
+    // P0-D skeleton probe: where the applied skeleton's joint names resolve on each root.
+    // Read-only; tells whether the Oni objects expose the same named joints as BODY.
+    // Export the currently applied body skeleton's rest positions so a transform entry
+    // can carry its own bindPositions instead of depending on the normal appearance.
+    static object OniExportBind() {
+        var manager = Manager();
+        var info = manager.getControllingPlayerInfo();
+        var entity = Alive(info) ? info.CharacterEntity : null;
+        var actor = Alive(info) ? info.Object : null;
+        if (!Alive(actor)) throw new InvalidOperationException("Player unavailable");
+        var skeleton = EffectiveBodySkeleton();
+        if (skeleton == null) throw new InvalidOperationException("No applied skeleton; wear the body first");
+        var positions = new Dictionary<string, float[]>();
+        foreach (var name in skeleton.JointNames) {
+            var joint = actor.Transform.getJointByName(name);
+            if (joint == null) continue;
+            var p = joint.BaseLocalPosition;
+            positions[name] = new[] { p.x, p.y, p.z };
+        }
+        return new { count = positions.Count, jointNames = skeleton.JointNames, bindPositions = positions };
+    }
+
+    static object OniSkeletonProbe() {
+        var manager = Manager();
+        var info = manager.getControllingPlayerInfo();
+        var entity = Alive(info) ? info.CharacterEntity : null;
+        var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+        var actor = Alive(info) ? info.Object : null;
+        if (!UsableSupporter(supporter) || !Alive(actor)) throw new InvalidOperationException("Player unavailable");
+        var skeleton = EffectiveBodySkeleton();
+        if (skeleton == null) {
+            // Fall back to the locked/selected transform entry's own skeleton.
+            var locked = s_transformLocks.Current;
+            if (locked != null && locked.EntryId != null && s_wardrobeRegistry != null &&
+                s_wardrobeRegistry.Entries.TryGetValue(locked.EntryId, out var lockedEntry))
+                skeleton = lockedEntry.Skeleton;
+        }
+        var names = skeleton == null ? new List<string>() : new List<string>(skeleton.JointNames);
+        var roots = new List<object>();
+        void Probe(string label, via.Transform root) {
+            if (root == null) { roots.Add(new { root = label, available = false }); return; }
+            int found = 0;
+            var samples = new List<object>();
+            foreach (var name in names) {
+                var joint = root.getJointByName(name);
+                if (joint == null) continue;
+                found++;
+                if (samples.Count < 4) {
+                    var p = joint.LocalPosition;
+                    samples.Add(new { name, x = p.x, y = p.y, z = p.z });
+                }
+            }
+            roots.Add(new { root = label, available = true, found, total = names.Count, samples });
+        }
+        Probe("actor", actor.Transform);
+        var oniBody = supporter.getGameObject(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.BODY_ONI_CHANGE);
+        Probe("oniBody", Alive(oniBody) ? oniBody.Transform : null);
+        var oniHead = supporter.getGameObject(app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT.HEAD_ONI_CHANGE);
+        Probe("oniHead", Alive(oniHead) ? oniHead.Transform : null);
+        var bodyType = app.cPlayerGameObjectSupporter.convertObjTypeToPartsType(app.PlayerPartsDef.PARTS_TYPE.BODY);
+        var body = supporter.getGameObject(bodyType);
+        Probe("body", Alive(body) ? body.Transform : null);
+        bool? oniOn = null;
+        try { var oni = Alive(entity) ? entity.OniSupporter : null; if (Alive(oni)) oniOn = oni.IsOniModeOn; } catch { }
+        return new { jointNames = names.Count, oniOn, rebaseEntries = s_rebaseEntries?.Count ?? 0,
+            oniRebaseEntries = s_oniRebaseEntries?.Count ?? 0, roots };
+    }
+
+    static object OniResidentProbe() {
+        var manager = Manager();
+        var catalog = manager.Catalog;
+        var rows = new List<object>();
+        var list = catalog._ResidentList;
+        if (list != null) {
+            // The runtime proxy dictionary is not enumerable; probe the known resident ids.
+            foreach (var value in Enum.GetValues<app.PlayerResidentPrefabID.TYPE_Fixed>()) {
+                int id = (int)value;
+                if (!list.ContainsKey(id)) continue;
+                var prefab = list[id];
+                rows.Add(new { id, type = value.ToString(),
+                    path = Alive(prefab) ? prefab.Path : null,
+                    ready = Alive(prefab) && prefab.Ready,
+                    valid = Alive(prefab) && prefab.Valid });
+            }
+        }
+        object oniObjects = null;
+        try {
+            var info = manager.getControllingPlayerInfo();
+            var entity = Alive(info) ? info.CharacterEntity : null;
+            var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            var objects = new List<object>();
+            foreach (var role in new[] { "BODY_ONI_CHANGE", "HEAD_ONI_CHANGE", "HAIR_ONI_CHANGE" }) {
+                var part = Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(role);
+                var obj = UsableSupporter(supporter) ? supporter.getGameObject(part) : null;
+                objects.Add(new { role, value = DescribeObject(obj) });
+            }
+            oniObjects = objects;
+        } catch (Exception e) { oniObjects = new { error = e.Message }; }
+        object skeleton = null;
+        try {
+            var info = manager.getControllingPlayerInfo();
+            var entity = Alive(info) ? info.CharacterEntity : null;
+            var supporter = Alive(entity) ? entity.GameObjectSupporter : null;
+            if (UsableSupporter(supporter)) {
+                var rows2 = new List<object>();
+                foreach (var role in new[] { "BODY", "HEAD_ONI_CHANGE", "BODY_ONI_CHANGE" }) {
+                    var obj = supporter.getGameObject(Enum.Parse<app.cPlayerGameObjectSupporter.PLAYER_GAME_OBJECT>(role));
+                    var component = Alive(obj) ? obj.getComponent(via.motion.Motion.REFType.RuntimeType.As<_System.Type>()) : null;
+                    var motion = Alive(component) ? ManagedObject.FromAddress(((IProxyable)component).GetAddress()).As<via.motion.Motion>() : null;
+                    if (Alive(motion)) {
+                        int joints = motion.JointCount;
+                        var positions = new List<object>();
+                        for (int i = 0; i < Math.Min(joints, 6); i++) {
+                            var p = motion.getLocalPosition(i);
+                            positions.Add(new { i, x = p.x, y = p.y, z = p.z });
+                        }
+                        rows2.Add(new { role, joints, animated = motion.AnimatedJointCount, sample = positions });
+                    } else rows2.Add(new { role, motion = false });
+                }
+                skeleton = rows2;
+            }
+        } catch (Exception e) { skeleton = new { error = e.Message }; }
+        return new { residentCount = rows.Count, residents = rows, liveOni = oniObjects, skeleton,
+            oniBodyId = (int)app.PlayerResidentPrefabID.TYPE_Fixed.ONI_BODY,
+            oniHeadId = (int)app.PlayerResidentPrefabID.TYPE_Fixed.ONI_HEAD };
+    }
+
+    static object OniProbe(JsonElement request) {        bool trace = request.TryGetProperty("trace", out var traceValue) && traceValue.GetBoolean();
+        if (!trace) return new { probe = OniProbeSnapshot(), tracing = s_oniTraceEnabled, file = OniTracePath() };
+        bool enabled = !request.TryGetProperty("enabled", out var enabledValue) || enabledValue.GetBoolean();
+        int seconds = request.TryGetProperty("seconds", out var secondsValue)
+            ? Math.Clamp(secondsValue.GetInt32(), 1, 600) : 60;
+        lock (s_oniTraceLock) {
+            s_oniTraceEnabled = enabled;
+            if (enabled) {
+                s_oniTrace.Clear();
+                s_oniTraceDeadline = Environment.TickCount64 + seconds * 1000L;
+                s_oniTraceNext = 0;
+            }
+        }
+        if (!enabled) WriteOniTrace();
+        return new { tracing = enabled, seconds, samples = s_oniTrace.Count, file = OniTracePath() };
+    }
+
+    static void SampleOniTrace() {
+        if (!s_oniTraceEnabled) return;
+        long now = Environment.TickCount64;
+        if (now < s_oniTraceNext) return;
+        s_oniTraceNext = now + 250;
+        if (now > s_oniTraceDeadline) {
+            s_oniTraceEnabled = false;
+            WriteOniTrace();
+            return;
+        }
+        object sample;
+        try { sample = OniProbeSnapshot(); }
+        catch (Exception e) { sample = new { at = DateTimeOffset.UtcNow, error = e.Message }; }
+        lock (s_oniTraceLock) {
+            if (s_oniTrace.Count >= 2000) s_oniTrace.RemoveAt(0);
+            s_oniTrace.Add(sample);
+        }
+    }
+
+    static void WriteOniTrace() {
+        try {
+            object payload;
+            lock (s_oniTraceLock) payload = new { writtenAt = DateTimeOffset.UtcNow, samples = s_oniTrace.ToArray() };
+            File.WriteAllText(OniTracePath(), JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        } catch (Exception e) { s_menuMessage = T("鬼化观察记录写入失败：", "Failed to write the Oni observation record: ") + e.Message; }
     }
 
     static object TraceModelChanges(JsonElement request) {

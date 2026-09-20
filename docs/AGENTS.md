@@ -9,6 +9,7 @@
 | `OWOTS_MOD_AUTHORING.md` | Current user-facing authoring and manifest guide |
 | `OWOTS_INDEPENDENT_SKELETON.md` | Existing independent actor skeleton contract and verification limits |
 | `OWOTS_FOUR_CATEGORY_WORKSPACE_REQUIREMENTS.md` | Four-category wardrobe and export requirements |
+| `OWOTS_TRANSFORM_ONI_REQUIREMENTS.md` | Fifth-category requirements v0.3: preselected Oni appearance locked per transformation, no switch and no keep-normal policy; S1 data layer and UI implemented, P0 findings recorded, MOD-to-live-Oni application still unvalidated |
 | `OWOTS_WARDROBE_UI_AND_EXPORT_PLAN.md` | Existing wardrobe UI and export plan |
 | `OWOTS_APPEARANCE_*.md` | Appearance requirements, architecture, runtime/save research, user guide and historical handoff |
 | `OWOTS_ASSET_LOADING_RESEARCH.md` | Asset loading and resource lifecycle research |
@@ -27,4 +28,5 @@ None.
 - Rotation-only mismatch in an unreferenced 93-joint rig now selects BODY mesh rest automatically, following the user's earlier successful AI-START conversion. Keep topology/scale validation and the needs-test notice. This does not add rotation retargeting to the runtime.
 - Prototype actions must remain clearly simulated until a real converter is connected. Never present the demo output counts as successful conversions of the private samples.
 - Historical runtime notes are time- and scenario-specific. Do not promote parsing or program completion into visual acceptance.
+- `OWOTS_TRANSFORM_ONI_REQUIREMENTS.md` v0.2 follows the user's 2026-09-18 clarification: select before transformation, freeze each transformation's active appearance, and defer mid-state changes. No backward compatibility or old-format migration is required; architecture may be replaced. Preserve current runtime cleanup and game-state isolation. Protocol/UI defaults remain design recommendations, and resident entry/exit behavior still needs P0 validation. No fifth category, Oni injection or converter support is implemented by this document.
 - Keep this guide synchronized when documentation structure changes.

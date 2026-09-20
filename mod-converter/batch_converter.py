@@ -449,7 +449,6 @@ class BatchConverter:
                     elif len(companions) > 1:
                         result.notices.append(Notice('COMPANION_AMBIGUOUS', f'发现多个{LABELS[category]}，已分别转换；穿戴后可自行选择。', [c['name'] for c in companions]))
                 if equip:
-                    manifest['schemaVersion'] = 3
                     manifest['rules']['equip'] = equip
             (package/entry['manifest']).write_text(json.dumps(manifest, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
         for asset in bundle.source.assets.values():

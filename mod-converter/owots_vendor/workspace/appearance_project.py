@@ -47,7 +47,7 @@ def build_manifest(identity, name, category, parts, *, hide_parts=(),
         raise ValueError("Invalid incompatible categories")
     if any(not isinstance(value, str) for value in (description, author, icon)):
         raise ValueError("Metadata must be text")
-    result = {"schemaVersion": 2, "id": identity, "name": name, "category": category,
+    result = {"schemaVersion": 4, "id": identity, "name": name, "category": category,
               "parts": output, "rules": {"hideParts": hidden, "incompatibleCategories": incompatible},
               "description": description, "author": author}
     if icon:

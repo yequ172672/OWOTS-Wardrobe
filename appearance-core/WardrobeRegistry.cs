@@ -3,26 +3,17 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace OWOTS.Appearance;
 
-public sealed record LegacyWardrobeBundle(AppearanceKind Kind,
-    IReadOnlyDictionary<WardrobeCategory, string> Selections);
 public sealed record WardrobeRegistrySnapshot(IReadOnlyDictionary<string, WardrobeManifestEntry> Entries,
-    IReadOnlyDictionary<string, LegacyWardrobeBundle> LegacyBundles, IReadOnlyList<RegistryIssue> Issues);
+    IReadOnlyList<RegistryIssue> Issues);
 
-/// <summary>Read-only v1 projection and v2 registry. Never rewrites a MOD manifest or save.</summary>
+/// <summary>Schema 4 registry. Older manifests are reported for re-conversion, never read.</summary>
 public static class WardrobeRegistry
 {
-    private sealed record Package(string Source, string Id, WardrobeManifestEntry[] Entries, LegacyWardrobeBundle? Legacy);
-    private static readonly Dictionary<int, string> PartNames = new() {
-        [0] = "BODY", [1] = "BODY_SUB", [2] = "HEAD", [3] = "HAIR", [4] = "GAUNTLET", [5] = "CLOAK",
-        [6] = "WEAPON", [7] = "SHEATH", [8] = "WEAPON_SUB", [9] = "SHEATH_SUB", [12] = "BOW" };
-
     public static WardrobeRegistrySnapshot ReadDirectory(string directory) => Build(
         Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "manifest.json", SearchOption.AllDirectories)
             .Order(StringComparer.OrdinalIgnoreCase).Select(path => (path, (Func<string>)(() => ReadPackage(path)))) :
@@ -39,7 +30,7 @@ public static class WardrobeRegistry
     public static string ApplyModInfo(string json, string text)
     {
         var root = JsonNode.Parse(json)!.AsObject();
-        if (root["schemaVersion"]?.GetValue<int>() != 2) return json;
+        if (root["schemaVersion"]?.GetValue<int>() != WardrobeManifest.SchemaVersion) return json;
         var values = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         string section = "modinfo";
         values[section] = new(StringComparer.OrdinalIgnoreCase);
@@ -60,84 +51,66 @@ public static class WardrobeRegistry
         var common = values["modinfo"];
         foreach (var key in new[] { "name", "description", "author" })
             if (common.TryGetValue(key, out var value)) root[key] = value;
-        if (values.TryGetValue("wardrobe." + root["category"]!.GetValue<string>(), out var fields)) {
-            if (fields.TryGetValue("id", out var id) && id != root["id"]!.GetValue<string>())
-                throw new FormatException("modinfo wardrobe ID differs from generated asset configuration; export again");
-            bool Flag(string key) => fields.TryGetValue(key, out var value) && bool.Parse(value);
+        if (!values.TryGetValue("wardrobe." + root["category"]!.GetValue<string>(), out var fields)) return root.ToJsonString();
+        if (fields.TryGetValue("id", out var id) && id != root["id"]!.GetValue<string>())
+            throw new FormatException("modinfo wardrobe ID differs from generated asset configuration; export again");
+        bool Flag(string key) => fields.TryGetValue(key, out var value) && bool.Parse(value);
+        var rules = root["rules"] as JsonObject ?? new JsonObject();
+        // An explicit INI declaration replaces the generated declaration of that field only;
+        // undeclared fields keep the manifest value (never a wholesale rules replacement).
+        if (fields.Keys.Any(key => key is "hide_head" or "hide_hair")) {
             var hidden = new JsonArray();
             if (Flag("hide_head")) hidden.Add("HEAD");
             if (Flag("hide_hair")) hidden.Add("HAIR");
+            rules["hideParts"] = hidden;
+        }
+        if (fields.Keys.Any(key => key is "incompatible_cloak" or "incompatible_gauntlet")) {
             var incompatible = new JsonArray();
             if (Flag("incompatible_cloak")) incompatible.Add("cloak");
             if (Flag("incompatible_gauntlet")) incompatible.Add("gauntlet");
-            root["rules"] = new JsonObject { ["hideParts"] = hidden, ["incompatibleCategories"] = incompatible };
+            rules["incompatibleCategories"] = incompatible;
         }
+        if (rules.Count > 0) root["rules"] = rules;
         return root.ToJsonString();
     }
 
     public static WardrobeRegistrySnapshot Build(IEnumerable<(string Source, Func<string> Read)> files)
     {
-        var packages = new List<Package>();
+        var parsed = new List<(string Source, WardrobeManifestEntry Entry)>();
         var issues = new List<RegistryIssue>();
         foreach (var file in files) {
             try {
                 var json = file.Read();
                 using var document = JsonDocument.Parse(json);
                 int version = document.RootElement.GetProperty("schemaVersion").GetInt32();
-                if (version == 1) packages.Add(ProjectLegacy(AppearanceRegistry.Parse(json, file.Source)));
-                else {
-                    var entry = WardrobeManifest.Parse(json, file.Source);
-                    packages.Add(new(file.Source, entry.Rules.Id, new[] { entry }, null));
+                if (version != WardrobeManifest.SchemaVersion) {
+                    issues.Add(new(file.Source, "Appearance manifest schemaVersion " + version +
+                        " is no longer read; re-convert this appearance"));
+                    continue;
                 }
+                parsed.Add((file.Source, WardrobeManifest.Parse(json, file.Source)));
             } catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or
                 FormatException or KeyNotFoundException or InvalidOperationException or OverflowException or ArgumentException) {
                 issues.Add(new(file.Source, e.Message));
             }
         }
-        var rejected = new HashSet<int>();
         var owners = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
-        for (int index = 0; index < packages.Count; index++)
-            foreach (var id in packages[index].Entries.Select(entry => entry.Rules.Id).Append(packages[index].Id).Distinct()) {
-                if (!owners.TryGetValue(id, out var list)) owners.Add(id, list = new List<int>());
-                list.Add(index);
-            }
+        for (int index = 0; index < parsed.Count; index++) {
+            var id = parsed[index].Entry.Rules.Id;
+            if (!owners.TryGetValue(id, out var list)) owners.Add(id, list = new List<int>());
+            list.Add(index);
+        }
+        var rejected = new HashSet<int>();
         foreach (var pair in owners.Where(pair => pair.Value.Count > 1))
             foreach (int index in pair.Value) {
                 rejected.Add(index);
-                issues.Add(new(packages[index].Source, "Duplicate MOD or projected entry id: " + pair.Key));
+                issues.Add(new(parsed[index].Source, "Duplicate MOD or entry id: " + pair.Key));
             }
         var entries = new Dictionary<string, WardrobeManifestEntry>(StringComparer.OrdinalIgnoreCase);
-        var legacy = new Dictionary<string, LegacyWardrobeBundle>(StringComparer.OrdinalIgnoreCase);
-        for (int index = 0; index < packages.Count; index++) {
-            if (rejected.Contains(index)) continue; // Never publish half a legacy outfit after an ID collision.
-            var package = packages[index];
-            foreach (var entry in package.Entries) entries.Add(entry.Rules.Id, entry);
-            if (package.Legacy != null) legacy.Add(package.Id, package.Legacy);
+        for (int index = 0; index < parsed.Count; index++) {
+            if (rejected.Contains(index)) continue;
+            entries.Add(parsed[index].Entry.Rules.Id, parsed[index].Entry);
         }
-        return new(new ReadOnlyDictionary<string, WardrobeManifestEntry>(entries),
-            new ReadOnlyDictionary<string, LegacyWardrobeBundle>(legacy), issues.AsReadOnly());
-    }
-
-    private static Package ProjectLegacy(AppearanceEntry old)
-    {
-        static WardrobeCategory Category(int part) => part switch {
-            <= 3 => WardrobeCategory.Body, 4 => WardrobeCategory.Gauntlet,
-            5 => WardrobeCategory.Cloak, _ => WardrobeCategory.Weapon };
-        var groups = old.Parts.GroupBy(part => Category(part.Part)).OrderBy(group => group.Key).ToArray();
-        var entries = new List<WardrobeManifestEntry>();
-        var selections = new Dictionary<WardrobeCategory, string>();
-        foreach (var group in groups) {
-            // Retain the original ID on the first available category; all other IDs are path/name independent.
-            var id = group.Key == groups[0].Key ? old.Id : "legacy." +
-                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(old.Id))).ToLowerInvariant() + "." + group.Key.ToString().ToLowerInvariant();
-            var parts = group.Select(part => new WardrobePart(PartNames[part.Part], part.Catalog, part.Prefab)).ToArray();
-            var rules = new WardrobeRuleEntry(id, group.Key, Array.AsReadOnly(parts.Select(part => part.Part).ToArray()),
-                Array.Empty<string>(), Array.Empty<WardrobeCategory>());
-            WardrobeComposition.Validate(rules);
-            entries.Add(new(rules, old.Name, Array.AsReadOnly(parts), old.Description, old.Author, old.Icon, old.Source));
-            selections.Add(group.Key, id);
-        }
-        return new(old.Source, old.Id, entries.ToArray(),
-            new LegacyWardrobeBundle(old.Kind, new ReadOnlyDictionary<WardrobeCategory, string>(selections)));
+        return new(new ReadOnlyDictionary<string, WardrobeManifestEntry>(entries), issues.AsReadOnly());
     }
 }

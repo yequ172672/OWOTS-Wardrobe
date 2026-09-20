@@ -6,28 +6,26 @@ using System.Text.Json.Serialization;
 
 namespace OWOTS.Appearance;
 
-// A legacy reference resolves per category. This preserves a missing package without
-// guessing which optional parts it contained, or clearing other categories on a manual change.
-public sealed record WardrobeSelection(string? EntryId, string? LegacyBundleId);
+// A value references exactly one registry entry; null means "native". Missing packages
+// are reported at resolution time without erasing the saved intent.
 public sealed record WardrobeEquipState(string DeclaringBodyId,
-    IReadOnlyDictionary<WardrobeCategory, WardrobeSelection?> PreviousSelections,
+    IReadOnlyDictionary<WardrobeCategory, string?> PreviousSelections,
     IReadOnlyList<WardrobeCategory> Overridden);
-public sealed record WardrobeSelectionState(IReadOnlyDictionary<WardrobeCategory, WardrobeSelection?> Requested,
+public sealed record WardrobeSelectionState(IReadOnlyDictionary<WardrobeCategory, string?> Requested,
     WardrobeVisibilityOptions Visibility,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WardrobeEquipState? Equipment = null);
 public sealed record WardrobeSelectionResolution(WardrobeCompositionResult Composition, IReadOnlyList<string> Issues,
-    bool IncompleteDeclaredEquipment = false);
+    bool IncompleteDeclaredEquipment = false,
+    WardrobeTransformResolution? Transform = null);
 
 public static class WardrobeSelections
 {
-    public static WardrobeSelectionState FromLegacy(SavedAppearance saved)
+    /// <summary>Fresh state with every category on native and the transform switch on.</summary>
+    public static WardrobeSelectionState Empty()
     {
-        var requested = new Dictionary<WardrobeCategory, WardrobeSelection?>();
-        foreach (var category in Enum.GetValues<WardrobeCategory>()) {
-            var id = category == WardrobeCategory.Weapon ? saved.Weapon : saved.Outfit;
-            requested[category] = id == null ? null : new(null, id);
-        }
-        return new(new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(requested),
+        var requested = new Dictionary<WardrobeCategory, string?>();
+        foreach (var category in Enum.GetValues<WardrobeCategory>()) requested[category] = null;
+        return new(new ReadOnlyDictionary<WardrobeCategory, string?>(requested),
             new(Array.Empty<WardrobeCategory>(), Array.Empty<WardrobeVisibilityOverride>()));
     }
 
@@ -46,25 +44,25 @@ public static class WardrobeSelections
                     if (!equipment.Overridden.Contains(previous.Key)) requested[previous.Key] = previous.Value;
             equipment = null;
             if (entryId != null && registry.Entries[entryId].Rules.Equip is { Count: > 0 } equip) {
-                var previous = new Dictionary<WardrobeCategory, WardrobeSelection?>();
+                var previous = new Dictionary<WardrobeCategory, string?>();
                 foreach (var pair in equip) {
                     if (!registry.Entries.TryGetValue(pair.Value, out var accessory) || accessory.Rules.Category != pair.Key)
                         throw new InvalidOperationException("Missing or wrong-category declared accessory: " + pair.Value);
                     requested.TryGetValue(pair.Key, out var beforeAccessory);
                     previous[pair.Key] = beforeAccessory;
-                    requested[pair.Key] = new(pair.Value, null);
+                    requested[pair.Key] = pair.Value;
                 }
-                equipment = new(entryId, new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(previous),
+                equipment = new(entryId, new ReadOnlyDictionary<WardrobeCategory, string?>(previous),
                     Array.Empty<WardrobeCategory>());
             }
         } else if (equipment != null && equipment.PreviousSelections.ContainsKey(category)) {
             equipment = equipment with { Overridden = Array.AsReadOnly(equipment.Overridden.Append(category).Distinct().ToArray()) };
         }
-        requested[category] = entryId == null ? null : new(entryId, null);
+        requested[category] = entryId;
         var before = Resolve(state, registry).Composition;
         before.Effective.TryGetValue(category, out var previousDeclaringId);
         // Changing a category is a new choice and cannot silently carry its old force approval.
-        return new(new ReadOnlyDictionary<WardrobeCategory, WardrobeSelection?>(requested), state.Visibility with {
+        return new(new ReadOnlyDictionary<WardrobeCategory, string?>(requested), state.Visibility with {
             ConfirmedOverrides = Array.AsReadOnly(state.Visibility.ConfirmedOverrides.Where(grant =>
                 grant.Category != category && grant.DeclaringId != previousDeclaringId).ToArray()) }, equipment);
     }
@@ -128,36 +126,25 @@ public static class WardrobeSelections
                     if (!equipment.Overridden.Contains(previous.Key)) requests[previous.Key] = previous.Value;
             } else foreach (var category in equipment.PreviousSelections.Keys.Where(category => !equipment.Overridden.Contains(category))) {
                 requests.TryGetValue(category, out var choice);
-                if (choice?.EntryId == null || !registry.Entries.TryGetValue(choice.EntryId, out var accessory) || accessory.Rules.Category != category) {
+                if (choice == null || !registry.Entries.TryGetValue(choice, out var accessory) || accessory.Rules.Category != category) {
                     incompleteEquipment = true;
-                    issues.Add("Missing declared accessory for " + equipment.DeclaringBodyId + ": " + (choice?.EntryId ?? category.ToString()));
+                    issues.Add("Missing declared accessory for " + equipment.DeclaringBodyId + ": " + (choice ?? category.ToString()));
                 }
             }
         }
         foreach (var pair in requests) {
+            if (pair.Key == WardrobeCategory.Transform) continue;
             if (!Enum.IsDefined(pair.Key)) throw new ArgumentException("Unknown saved category");
-            var selection = pair.Value;
-            if (selection == null) { resolved[pair.Key] = null; continue; }
-            if ((selection.EntryId == null) == (selection.LegacyBundleId == null))
-                throw new ArgumentException("Choice must reference exactly one entry or legacy bundle");
-            if (selection.EntryId != null) { resolved[pair.Key] = selection.EntryId; continue; }
-            if (!registry.LegacyBundles.TryGetValue(selection.LegacyBundleId!, out var bundle)) {
-                issues.Add("Missing legacy bundle for " + pair.Key + ": " + selection.LegacyBundleId);
-                resolved[pair.Key] = null;
-                continue;
-            }
-            bool weapon = pair.Key == WardrobeCategory.Weapon;
-            if (weapon != (bundle.Kind == AppearanceKind.Weapon)) {
-                issues.Add("Wrong-kind legacy bundle: " + selection.LegacyBundleId);
-                resolved[pair.Key] = null;
-                continue;
-            }
-            // An installed body-only legacy package intentionally has no cloak/gauntlet entry.
-            resolved[pair.Key] = bundle.Selections.TryGetValue(pair.Key, out var id) ? id : null;
+            resolved[pair.Key] = pair.Value;
         }
         var composition = WardrobeComposition.Resolve(resolved,
             registry.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.Rules), state.Visibility);
         issues.AddRange(composition.Issues);
-        return new(composition, issues.AsReadOnly(), incompleteEquipment);
+        // The transform domain is solved independently: its problems delay neither the
+        // normal-state apply nor the game's own transformation.
+        requests.TryGetValue(WardrobeCategory.Transform, out var transformChoice);
+        var transform = WardrobeComposition.ResolveTransform(transformChoice,
+            registry.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.Rules));
+        return new(composition, issues.AsReadOnly(), incompleteEquipment, transform);
     }
 }

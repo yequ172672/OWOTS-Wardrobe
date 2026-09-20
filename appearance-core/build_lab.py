@@ -12,7 +12,7 @@ lab = (repo / 'reframework/plugins/source/OWOTSAppearanceLab.cs').read_text(enco
 # Namespace-local usings preserve each source's imports. Both copies come from the
 # same tested source, so the runtime does not maintain a separate parser implementation.
 combined = lab
-for name in ('AppearanceRegistry.cs', 'AppearanceSaveStore.cs', 'NativeCostumeSelections.cs', 'WardrobePreferences.cs', 'AppearanceOperationClock.cs', 'WardrobeComposition.cs', 'WardrobeManifest.cs', 'WardrobeSkeleton.cs', 'WardrobeRegistry.cs', 'WardrobeSelectionState.cs', 'WardrobeSaveStore.cs'):
+for name in ('AppearanceRegistry.cs', 'AppearanceSaveStore.cs', 'NativeCostumeSelections.cs', 'WardrobePreferences.cs', 'AppearanceOperationClock.cs', 'WardrobeComposition.cs', 'WardrobeManifest.cs', 'WardrobeSkeleton.cs', 'WardrobeRegistry.cs', 'WardrobeSelectionState.cs', 'WardrobeTransform.cs', 'WardrobeSaveStore.cs'):
     core = (core_dir / name).read_text(encoding='utf-8-sig')
     prefix, separator, body = core.partition('namespace OWOTS.Appearance;')
     if not separator:

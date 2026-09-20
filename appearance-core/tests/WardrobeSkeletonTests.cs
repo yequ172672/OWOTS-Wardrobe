@@ -78,9 +78,9 @@ static class WardrobeSkeletonTests
             Check(!minimalSnapshot.RootElement.GetProperty("bindPositions").EnumerateObject().Any(),
                 "A skeleton with no declared bind positions must expose none in the snapshot");
 
-        // A schema-2 manifest without the optional field remains source-compatible.
+        // A schema 4 manifest without the optional field remains valid.
         Check(WardrobeManifest.Parse(Manifest("legacy.body", "body", "BODY", null), "legacy").Skeleton == null,
-            "Legacy schema-2 manifest unexpectedly required skeleton metadata");
+            "Schema 4 manifest unexpectedly required skeleton metadata");
         var legacyV1 = JsonSerializer.Serialize(new {
             schemaVersion = 1, id = "legacy.outfit", name = "旧套装", kind = "outfit",
             parts = new[] { new { part = "BODY", catalog = "mods/legacy/catalog.user", prefab = "mods/legacy/body.pfb" } }
@@ -141,7 +141,7 @@ static class WardrobeSkeletonTests
             ["prefab"] = "mods/" + id + "/body.pfb"
         });
         var root = new JsonObject {
-            ["schemaVersion"] = 2,
+            ["schemaVersion"] = WardrobeManifest.SchemaVersion,
             ["id"] = id,
             ["name"] = id,
             ["category"] = category,

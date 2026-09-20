@@ -10,7 +10,7 @@ and test extracts remain outside it.
 
 | File | Purpose |
 | --- | --- |
-| `mod_converter.py` | Standard-library CLI, safe KPKA reader, dependency graph, FBXSKEL v1 validation and schema 2 publisher |
+| `mod_converter.py` | Standard-library CLI, safe KPKA reader, dependency graph, FBXSKEL v1 validation and schema 4 publisher |
 | `texture_resolution.py` | Pure-Python TEX251111100 structure inspection and conservative streaming-to-base promotion |
 | `converter_gui.py` | Minimal Tk/TkinterDnD2 player UI: directories, drop zone, result list; worker-thread queue and off-screen self-test |
 | `batch_converter.py` | Container/layer ownership, graph-proven native candidates, multi-entry registration, declared attachments, shared game reference, atomic batch publication and resource ledger |
@@ -76,11 +76,15 @@ and test extracts remain outside it.
   recognize texture-only edits. Original unmodified leaf references stay original;
   their bytes are not unnecessarily read/copied. A texture streaming-only edit
   makes the base node private and retains the input streaming companion.
-* Schema 3 `rules.equip` references separately registered visible cloak/gauntlet
+* Schema 4 `rules.equip` references separately registered visible cloak/gauntlet
   entries. Publish body and attachments in one atomic package and verify references.
   For shared accessory meshes, prefer a unique attachment from the same native
   character family, including covered targets of merged accessories; report real ambiguity.
   BODY/HEAD/HAIR can share a body registration; weapons group by exact native ID.
+* Normal categories now publish schema 4 (the wardrobe no longer reads schema 2/3).
+  Transform (`category: transform`, `roots` ONI_BODY/ONI_HEAD) recognition and
+  publication is still pending: until it lands, a MOD that replaces Oni resources
+  converts only its normal categories and the Oni assets are reported as unconsumed.
 * Deduplicate within each source asset layer after part grouping and before publication.
   Compare complete mesh bytes, MDF properties/slots and effective base/streaming
   textures, auxiliary resources, opaque PFB fields, supplied parts, hides and equip

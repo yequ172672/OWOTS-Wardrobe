@@ -15,7 +15,7 @@ A **multi-MOD outfit / weapon appearance** system for *Onimusha: Way of the Swor
 
 - **Multiple MODs coexist**: install several outfits / weapon appearances and switch or remove them independently in-game.
 - **Independent assets**: each entry can reference its own meshes, materials, textures, skeleton and physics instead of overwriting native files.
-- **Four categories**: Body / Cloak / Gauntlet / Weapon, with author-declared hiding and force-wear confirmation.
+- **Five categories**: Body / Cloak / Gauntlet / Weapon / Transform (Oni appearance, preselected before a transformation), with author-declared hiding and force-wear confirmation.
 - **Every character instance**: the world actor, the Costume screen character and the system-menu character all mirror the appearance, including body-shape rebasing and declared hiding.
 - **Built-in native entries**: the game's own outfits, weapons, gauntlets and cloaks are exposed as wardrobe entries and can be unlocked early; entries whose DLC assets are missing are refused instead of crashing.
 - **Bilingual UI**: follows the system language automatically and can be forced in Settings.
@@ -76,7 +76,7 @@ Full details — manifest contract, parts and categories, standalone rigs, commo
 
 | Directory | Purpose |
 | --- | --- |
-| `appearance-core` | Manifest registry, four-category composition, save sidecar, preferences and the lab bundler |
+| `appearance-core` | Manifest registry, five-category composition (including the transform domain), save sidecar, preferences and the lab bundler |
 | `reframework` | In-game plugin source (`plugins/source/OWOTSAppearanceLab.cs`), built-in icons and the retirement marker |
 | `mod-converter` | Loose/PAK appearance converter and diagnostic reports |
 | `release-tools` | Reproducible test-release packaging, install, verify and rollback helpers |

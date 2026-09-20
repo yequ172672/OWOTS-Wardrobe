@@ -6,42 +6,41 @@ static class WardrobeRegistryTests
     public static void Run()
     {
         static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
-        var old = JsonSerializer.Serialize(new { schemaVersion = 1, id = "old.outfit", name = "套装",
-            kind = "outfit", parts = new[] { "BODY", "HEAD", "HAIR", "CLOAK", "GAUNTLET" }.Select(part =>
-                new { part, catalog = "mods/old/catalog.user", prefab = "mods/old/" + part.ToLowerInvariant() + ".pfb" }) });
-        WardrobeRegistrySnapshot Build(params (string Source, string Json)[] files) =>
-            WardrobeRegistry.Build(files.Select(file => (file.Source, (Func<string>)(() => file.Json))));
-        var registry = Build(("old/manifest.json", old));
-        var bundle = registry.LegacyBundles["old.outfit"];
-        Check(registry.Issues.Count == 0 && bundle.Selections.Count == 3, "Legacy outfit lost a category");
-        Check(registry.Entries.Values.Sum(entry => entry.Parts.Count) == 5, "Legacy projection lost resources");
-        Check(bundle.Selections[WardrobeCategory.Body] == "old.outfit", "Original primary identity changed");
-        var relocated = Build(("renamed/manifest.json", old));
-        Check(registry.Entries.Keys.Order().SequenceEqual(relocated.Entries.Keys.Order()), "Moving MOD changed projected identity");
-        var rules = registry.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.Rules);
-        var requested = bundle.Selections.ToDictionary(pair => pair.Key, pair => (string?)pair.Value);
-        Check(WardrobeComposition.Resolve(requested, rules).Effective.Count == 3, "Legacy bundle cannot be composed");
-        var cloakId = bundle.Selections[WardrobeCategory.Cloak];
-        var v2 = JsonSerializer.Serialize(new { schemaVersion = 2, id = cloakId, name = "冲突条目", category = "cloak",
-            parts = new[] { new { part = "CLOAK", catalog = "mods/new/catalog.user", prefab = "mods/new/cloak.pfb" } } });
-        var conflict = Build(("old", old), ("new", v2));
-        Check(conflict.Entries.Count == 0 && conflict.LegacyBundles.Count == 0 && conflict.Issues.Count == 2,
-            "Collision silently published a partial legacy bundle");
-        var isolated = Build(("old", old), ("bad", "{"));
-        Check(isolated.Entries.Count == 3 && isolated.Issues.Count == 1, "Bad file blocked independent valid entries");
-        var saved = WardrobeSelections.FromLegacy(new("old.outfit", null));
-        var absent = WardrobeSelections.Resolve(saved, Build());
-        Check(absent.Issues.Count == 3 && saved.Requested[WardrobeCategory.Cloak]?.LegacyBundleId == "old.outfit",
-            "Missing legacy package was erased or guessed");
-        saved = WardrobeSelections.Choose(saved, WardrobeCategory.Cloak, null, Build());
-        var reinstalled = WardrobeSelections.Resolve(saved, registry);
-        Check(reinstalled.Composition.Effective.Count == 2 && !reinstalled.Composition.Effective.ContainsKey(WardrobeCategory.Cloak),
-            "Reinstall ignored manual cloak cancellation or lost other legacy categories");
-        Check(reinstalled.Issues.Count == 0, "Valid reinstalled bundle still warned");
-        string Declared(string id, string category, string part, string[] hidden, string[] incompatible) =>
-            JsonSerializer.Serialize(new { schemaVersion = 2, id, name = id, category,
+        static string Declared(string id, string category, string part, string[] hidden, string[] incompatible) =>
+            JsonSerializer.Serialize(new { schemaVersion = 4, id, name = id, category,
                 parts = new[] { new { part, catalog = "mods/test/catalog.user", prefab = "mods/test/model.pfb" } },
                 rules = new { hideParts = hidden, incompatibleCategories = incompatible } });
+        WardrobeRegistrySnapshot Build(params (string Source, string Json)[] files) =>
+            WardrobeRegistry.Build(files.Select(file => (file.Source, (Func<string>)(() => file.Json))));
+
+        var v2 = Declared("new.body", "body", "BODY", new[] { "HEAD" }, Array.Empty<string>());
+        var v3 = v2.Replace("\"schemaVersion\":4", "\"schemaVersion\":3");
+        var v2Only = v2.Replace("\"schemaVersion\":4", "\"schemaVersion\":2");
+        var v1 = JsonSerializer.Serialize(new { schemaVersion = 1, id = "old.outfit", name = "套装", kind = "outfit",
+            parts = new[] { "BODY", "HEAD", "HAIR", "CLOAK", "GAUNTLET" }.Select(part =>
+                new { part, catalog = "mods/old/catalog.user", prefab = "mods/old/" + part.ToLowerInvariant() + ".pfb" }) });
+        var legacy = Build(("old/manifest.json", v1), ("v2/manifest.json", v2Only), ("v3/manifest.json", v3), ("new/manifest.json", v2));
+        Check(legacy.Entries.Count == 1 && legacy.Entries.ContainsKey("new.body"), "Schema 4 entry was rejected or an older schema was read");
+        Check(legacy.Issues.Count == 3 && legacy.Issues.All(issue => issue.Message.Contains("re-convert")),
+            "Older manifests must be reported for re-conversion with one issue each");
+        var duplicate = Build(("a", v2), ("b", v2.Replace("\"new.body\"", "\"new.body\"")));
+        Check(duplicate.Entries.Count == 0 && duplicate.Issues.Count == 2, "Conflicting IDs must both be rejected");
+        var isolated = Build(("bad", "{"), ("valid", v2));
+        Check(isolated.Entries.Count == 1 && isolated.Issues.Count == 1, "A malformed manifest blocked an independent valid entry");
+        var transform = """{"schemaVersion":4,"id":"oni.custom","name":"鬼化","category":"transform","roots":[{"root":"ONI_BODY","prefab":"mods/oni/body.pfb"},{"root":"ONI_HEAD","catalog":"mods/oni/head.user","prefab":"mods/oni/head.pfb"}],"rules":{"hideParts":["HAIR"]}}""";
+        var withTransform = Build(("oni", transform));
+        Check(withTransform.Issues.Count == 0 && withTransform.Entries["oni.custom"].Rules.Category == WardrobeCategory.Transform &&
+            withTransform.Entries["oni.custom"].Rules.ProvidedParts.SequenceEqual(new[] { "ONI_BODY", "ONI_HEAD" }) &&
+            withTransform.Entries["oni.custom"].Rules.HiddenParts.SequenceEqual(new[] { "HAIR" }),
+            "Transform manifest did not parse its roots and in-domain targets");
+        foreach (var invalid in new[] {
+            transform.Replace("\"ONI_TAIL\"", "\"ONI_TAIL\"").Replace("\"ONI_BODY\"", "\"ONI_TAIL\""),
+            transform.Replace("\"HAIR\"", "\"CLOAK\""),
+            transform.Replace("\"roots\":", "\"parts\":[{\"part\":\"BODY\",\"catalog\":\"mods/oni/a.user\",\"prefab\":\"mods/oni/a.pfb\"}],\"ignored\":") })
+        {
+            var rejected = Build(("oni", invalid));
+            Check(rejected.Entries.Count == 0 && rejected.Issues.Count == 1, "Invalid transform manifest was accepted");
+        }
         var iniRoot = Path.Combine(Path.GetTempPath(), "wardrobe-ini-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(iniRoot);
         try {
@@ -50,7 +49,7 @@ static class WardrobeRegistryTests
             File.WriteAllText(Path.Combine(iniRoot, "modinfo.ini"), common);
             var fromIni = WardrobeRegistry.ReadDirectory(iniRoot);
             Check(fromIni.Issues.Count == 0 && fromIni.Entries["ini.body"].Name == "INI name", "Shared INI metadata was not read");
-            var resolvedIni = WardrobeSelections.Resolve(WardrobeSelections.Choose(WardrobeSelections.FromLegacy(new(null,null)),
+            var resolvedIni = WardrobeSelections.Resolve(WardrobeSelections.Choose(WardrobeSelections.Empty(),
                 WardrobeCategory.Body, "ini.body", fromIni), fromIni).Composition;
             Check(resolvedIni.HiddenParts.Contains("HEAD") && resolvedIni.HiddenParts.Contains("HAIR") && resolvedIni.HiddenParts.Contains("CLOAK"), "INI hide declarations were not applied");
             Check(File.ReadAllText(Path.Combine(iniRoot,"modinfo.ini")) == common, "Runtime changed author INI");
@@ -59,7 +58,7 @@ static class WardrobeRegistryTests
         } finally { Directory.Delete(iniRoot,true); }
         var declared = Build(("body", Declared("new.body", "body", "BODY", Array.Empty<string>(), new[] { "cloak", "gauntlet" })),
             ("cloak", Declared("new.cloak", "cloak", "CLOAK", new[] { "GAUNTLET" }, Array.Empty<string>())));
-        var state = WardrobeSelections.FromLegacy(new(null, null));
+        var state = WardrobeSelections.Empty();
         state = WardrobeSelections.Choose(state, WardrobeCategory.Body, "new.body", declared);
         state = WardrobeSelections.Choose(state, WardrobeCategory.Cloak, "new.cloak", declared);
         var required = WardrobeSelections.RequiredForceDeclarations(state, WardrobeCategory.Cloak, declared);
@@ -70,7 +69,7 @@ static class WardrobeRegistryTests
             "Multiple declaring MODs were not included in confirmation");
         var off = WardrobeSelections.SetVisible(forced, WardrobeCategory.Cloak, false);
         Check(WardrobeSelections.Resolve(off, declared).Composition.HiddenParts.Contains("CLOAK") &&
-            off.Requested[WardrobeCategory.Cloak]?.EntryId == "new.cloak", "Display off erased choice or retained force");
+            off.Requested[WardrobeCategory.Cloak] == "new.cloak", "Display off erased choice or retained force");
         Check(WardrobeSelections.RequiredForceDeclarations(WardrobeSelections.SetVisible(off, WardrobeCategory.Cloak, true),
             WardrobeCategory.Cloak, declared).Count == 1, "Reopening skipped author's declaration");
         var changed = WardrobeSelections.Choose(forced, WardrobeCategory.Body, null, declared);
@@ -81,7 +80,7 @@ static class WardrobeRegistryTests
         try { WardrobeSelections.ConfirmForce(state, WardrobeCategory.Cloak, new[] { "stale.body" }, declared); }
         catch (InvalidOperationException) { staleRejected = true; }
         Check(staleRejected, "Stale confirmation accepted");
+        Console.WriteLine("PASS: schema 4 parsing, transform roots, older-version re-conversion reporting and isolated invalid files");
         Console.WriteLine("PASS: scoped confirmation, multiple blockers, display off/on, retained choice and expired approval");
-        Console.WriteLine("PASS: complete legacy projection, stable relocated identities, composition and atomic collision rejection");
     }
 }

@@ -51,8 +51,9 @@ public sealed class WardrobeSkeleton
     {
         if (value.ValueKind != JsonValueKind.Object) throw new FormatException("Expected skeleton object");
         if (string.IsNullOrWhiteSpace(manifestId)) throw new ArgumentException("Manifest ID is required", nameof(manifestId));
-        if (category != WardrobeCategory.Body) throw new FormatException("Skeleton metadata requires a BODY manifest");
-        if (parts == null || !parts.Any(part => part.Part == "BODY"))
+        if (category != WardrobeCategory.Body && category != WardrobeCategory.Transform)
+            throw new FormatException("Skeleton metadata requires a BODY or transform manifest");
+        if (category == WardrobeCategory.Body && (parts == null || !parts.Any(part => part.Part == "BODY")))
             throw new FormatException("Skeleton metadata requires a BODY part");
 
         Fields(value, "schemaVersion", "kind", "resource", "bodyMesh", "jointNames",

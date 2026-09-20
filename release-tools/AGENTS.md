@@ -7,6 +7,7 @@
 | `Install-OWOTSAppearance.ps1` | Preflight target paths, preserve originals, install with transaction records and rollback on failure |
 | `Uninstall-OWOTSAppearance.ps1` | Preflight backup integrity and restore only unchanged owned files |
 | `Verify-OWOTSAppearance.ps1` | Check distribution and optionally installed files against the release manifest |
+| `Verify-LabCompile.ps1` | Offline compile check: build_lab.py bundle against the game's REFramework.NET assemblies without launching or writing the game |
 | `README-zh-CN.md` | Tester setup, runtime prerequisites, install/uninstall and bounded acceptance claims |
 | `THIRD-PARTY-NOTICES.md` | Component provenance and runtime download references |
 | `LICENSE-OWOTS-Appearance.txt` | Reference to the full project license distributed with the package |

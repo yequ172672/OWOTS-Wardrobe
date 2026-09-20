@@ -7,7 +7,15 @@ using System.Text.RegularExpressions;
 namespace OWOTS.Appearance;
 
 // Logical categories only. Native enum/asset mapping belongs to the game adapter.
-public enum WardrobeCategory { Body, Cloak, Gauntlet, Weapon }
+// Transform is the Oni/ghost transformation domain: it owns resident roots and is
+// planned separately from the four normal-state categories.
+public enum WardrobeCategory { Body, Cloak, Gauntlet, Weapon, Transform }
+
+// Per-transformation decision, solved once when a transformation starts.
+// The wardrobe only changes the transformation appearance; the game keeps owning
+// triggering, display and timing, so there is no keep-normal or switch policy.
+public enum TransformPolicy { Native, WardrobeEntry }
+
 public sealed record WardrobeRuleEntry(string Id, WardrobeCategory Category,
     IReadOnlyList<string> ProvidedParts, IReadOnlyList<string> HiddenParts,
     IReadOnlyList<WardrobeCategory> IncompatibleCategories,
@@ -22,6 +30,9 @@ public sealed record WardrobeCompositionResult(
 public sealed record WardrobeVisibilityOverride(WardrobeCategory Category, string DeclaringId);
 public sealed record WardrobeVisibilityOptions(IReadOnlyList<WardrobeCategory> Disabled,
     IReadOnlyList<WardrobeVisibilityOverride> ConfirmedOverrides);
+// Frozen decision for one transformation. Runtime resource ownership stays adapter-side.
+public sealed record WardrobeTransformPlan(TransformPolicy Policy, string? EntryId, IReadOnlyList<string> HiddenParts);
+public sealed record WardrobeTransformResolution(WardrobeTransformPlan? Plan, IReadOnlyList<string> Issues);
 
 /// <summary>Pure planning only: does not hide meshes, free resources or rewrite saved choices.</summary>
 public static class WardrobeComposition
@@ -35,6 +46,14 @@ public static class WardrobeComposition
             [WardrobeCategory.Gauntlet] = new[] { "GAUNTLET" },
             [WardrobeCategory.Weapon] = new[] { "WEAPON", "SHEATH", "WEAPON_SUB", "SHEATH_SUB", "BOW" }
         };
+    // Transform resident roots and the in-domain visibility targets they contain. A root
+    // and a target may share a theme (onihead owns the head and hair meshes) but never the
+    // same name, so providing a root and hiding a target can never collide. "KABUTO" is
+    // deliberately absent until P0 proves an independently controllable object exists.
+    public static readonly IReadOnlyList<string> TransformRoots =
+        Array.AsReadOnly(new[] { "ONI_BODY", "ONI_HEAD" });
+    public static readonly IReadOnlyList<string> TransformTargets =
+        Array.AsReadOnly(new[] { "HEAD", "HAIR" });
 
     public static WardrobeCompositionResult Resolve(IReadOnlyDictionary<WardrobeCategory, string?> requested,
         IReadOnlyDictionary<string, WardrobeRuleEntry> registry, WardrobeVisibilityOptions? visibility = null)
@@ -46,7 +65,7 @@ public static class WardrobeComposition
         bool Forced(WardrobeCategory category, string declaringId) =>
             visibility?.ConfirmedOverrides.Any(grant => grant.Category == category && grant.DeclaringId == declaringId) ?? false;
         foreach (var category in requested.Keys)
-            if (!CategoryParts.ContainsKey(category)) throw new ArgumentException("Unknown category");
+            if (!CategoryParts.ContainsKey(category)) throw new ArgumentException("Transform is planned separately from normal categories");
         var intent = new Dictionary<WardrobeCategory, string?>();
         var effective = new Dictionary<WardrobeCategory, string>();
         var suppressed = new Dictionary<WardrobeCategory, string>();
@@ -98,10 +117,37 @@ public static class WardrobeComposition
             Array.AsReadOnly(hidden.Order(StringComparer.Ordinal).ToArray()), issues.AsReadOnly());
     }
 
+    /// <summary>
+    /// Solves the R4 rule for one transformation: an explicit selection uses that
+    /// appearance, otherwise the game's own Oni appearance. The caller freezes the
+    /// result as the per-transformation snapshot; later changes never rewrite it.
+    /// </summary>
+    public static WardrobeTransformResolution ResolveTransform(string? selectedEntryId,
+        IReadOnlyDictionary<string, WardrobeRuleEntry> registry)
+    {
+        if (selectedEntryId != null)
+        {
+            if (registry.TryGetValue(selectedEntryId, out var entry) && entry.Id == selectedEntryId &&
+                entry.Category == WardrobeCategory.Transform)
+            {
+                Validate(entry);
+                return new(new WardrobeTransformPlan(TransformPolicy.WardrobeEntry, entry.Id, entry.HiddenParts),
+                    Array.Empty<string>());
+            }
+            // A missing or rejected selection falls back to the native appearance; the saved
+            // intent stays intact for the next transformation.
+            return new(new WardrobeTransformPlan(TransformPolicy.Native, null, Array.Empty<string>()),
+                Array.AsReadOnly(new[] { "Missing or wrong-category transform appearance: " + selectedEntryId }));
+        }
+        return new(new WardrobeTransformPlan(TransformPolicy.Native, null, Array.Empty<string>()), Array.Empty<string>());
+    }
+
     public static void Validate(WardrobeRuleEntry entry)
     {
-        if (string.IsNullOrWhiteSpace(entry.Id) || !CategoryParts.ContainsKey(entry.Category))
-            throw new ArgumentException("Invalid entry identity/category");
+        if (string.IsNullOrWhiteSpace(entry.Id)) throw new ArgumentException("Invalid entry identity");
+        if (entry.Category == WardrobeCategory.Transform) { ValidateTransform(entry); return; }
+        if (!CategoryParts.ContainsKey(entry.Category))
+            throw new ArgumentException("Invalid entry category");
         if (entry.ProvidedParts.Count == 0 || entry.ProvidedParts.Distinct().Count() != entry.ProvidedParts.Count ||
             entry.ProvidedParts.Any(part => !CategoryParts[entry.Category].Contains(part)))
             throw new ArgumentException("Invalid provided parts");
@@ -121,5 +167,19 @@ public static class WardrobeComposition
                     throw new ArgumentException("Cannot equip and hide the same accessory category");
             }
         }
+    }
+
+    private static void ValidateTransform(WardrobeRuleEntry entry)
+    {
+        if (entry.ProvidedParts.Count == 0 || entry.ProvidedParts.Distinct().Count() != entry.ProvidedParts.Count ||
+            entry.ProvidedParts.Any(root => !TransformRoots.Contains(root)))
+            throw new ArgumentException("Invalid transform resident roots");
+        if (entry.HiddenParts.Distinct().Count() != entry.HiddenParts.Count ||
+            entry.HiddenParts.Any(target => !TransformTargets.Contains(target)))
+            throw new ArgumentException("Unknown transform visibility target");
+        if (entry.IncompatibleCategories.Count != 0)
+            throw new ArgumentException("Transform entries cannot declare category incompatibilities");
+        if (entry.Equip != null)
+            throw new ArgumentException("Transform entries cannot declare accessory equip");
     }
 }

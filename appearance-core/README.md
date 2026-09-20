@@ -5,15 +5,21 @@ This library reads MOD identities and logical resource references without loadin
 Current milestone prioritizes core appearance switching and UI, followed by scene lifecycle and save-associated restoration. Dedicated weapon attribute research and registration are deferred optional work. Cosmetic selection still must not write native equipment or attribute values; numeric damage/guard behavior has not been independently verified.
 
 
-## Current four-category contract (2026-09-15)
+## Current five-category contract (schema 4, 2026-09-18)
 
-New Mesh authoring exports schema 2. BODY, CLOAK, GAUNTLET and WEAPON categories have independent stable IDs; weapon cosmetics do not own native weapon attributes. Example:
+Normal-state categories (BODY, CLOAK, GAUNTLET, WEAPON) and the transform category have independent stable IDs; weapon cosmetics do not own native weapon attributes. Schema 4 is the only format the wardrobe reads: older schema 2/3 manifests and v1–v3 sidecars are reported for re-conversion/rebuild and are never migrated. Example:
 
 ```json
-{"schemaVersion":2,"id":"author.body","name":"Body","category":"body",
+{"schemaVersion":4,"id":"author.body","name":"Body","category":"body",
  "parts":[{"part":"BODY","catalog":"mods/author.body/body.user","prefab":"mods/author.body/body.pfb"}],
  "rules":{"hideParts":["HEAD","HAIR"],"incompatibleCategories":["cloak","gauntlet"]}}
+
+{"schemaVersion":4,"id":"author.oni","name":"Oni","category":"transform",
+ "roots":[{"root":"ONI_BODY","prefab":"mods/author.oni/body.pfb"},{"root":"ONI_HEAD","prefab":"mods/author.oni/head.pfb"}],
+ "rules":{"hideParts":["HAIR"]}}
 ```
+
+A transform entry declares `roots` (`ONI_BODY`, `ONI_HEAD`) instead of `parts`; `catalog` is optional there. Its `rules.hideParts` values are in-domain targets (`HEAD`, `HAIR`) and never mix with normal-state hiding. There is no switch and no keep-normal policy (user decision v0.3): a selected transform entry is used for the next transformation, otherwise the game's own Oni appearance. `WardrobeComposition.ResolveTransform` solves that rule and `WardrobeTransformSnapshotStore` freezes one plan per transformation; later changes only report `IsPending`.
 
 BODY entries may also declare an optional `skeleton` object with
 `schemaVersion: 1` and `kind: "actor-fbxskel-v1"`. Its `resource` and
@@ -25,7 +31,7 @@ same ordered 93-joint set with finite three-component positions. The
 validates this declaration and returns it in read-only snapshots; it does not
 open binary skeletons, retarget bones or prove native compatibility.
 
-Use `wardrobe_registry` and `wardrobe_select` (`category`, `modId`) for schema 2. Accessory visibility uses `wardrobe_visibility` (`category`, `visible`). If force is required, the response identifies declaring MOD IDs; only the exact confirmed declarations can authorize that choice. The UI provides this confirmation. Titles can hide cloak/gauntlet while retaining requested selections. Resolve effective state separately from requested intent; persist the latter.
+Use `wardrobe_registry` and `wardrobe_select` (`category`, `modId`) for schema 4; `category: "transform"` selects a transformation appearance. Accessory visibility uses `wardrobe_visibility` (`category`, `visible`). If force is required, the response identifies declaring MOD IDs; only the exact confirmed declarations can authorize that choice. The UI provides this confirmation. Titles can hide cloak/gauntlet while retaining requested selections. Resolve effective state separately from requested intent; persist the latter.
 
 `registry_list/select/clear` are legacy two-group tools. In four-category mode their active IDs may be synthetic `runtime.wardrobe.*` groups and cannot reconstruct original selections. The new `wardrobe_status` read-only endpoint has compiled but is not installed yet. Do not invoke it against the current bundle expecting it to exist.
 

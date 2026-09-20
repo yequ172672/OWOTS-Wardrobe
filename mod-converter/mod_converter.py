@@ -74,7 +74,7 @@ def T(zh: str, en: str) -> str:
 
 
 TOOL_VERSION = "2026.09.18-dev4"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 KNOWN_EXTENSIONS = (
     ".pfb", ".user", ".mdf2", ".mesh", ".tex", ".mmi", ".mpi",
     ".jcns", ".chain2", ".motbank", ".motlist", ".fbxskel",

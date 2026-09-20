@@ -182,40 +182,59 @@ try
     try { store.Read(key with { Slot = 0 }); throw new Exception("Expected invalid save key rejection"); }
     catch (ArgumentException) { }
     Require(Directory.GetFiles(temporary, "*.tmp").Length == 0, "Temporary writes were left behind");
-    var v2Directory = Path.Combine(temporary, "v2");
-    var oldStore = new AppearanceSaveStore(v2Directory);
-    oldStore.Write(key, new SavedAppearance("old.outfit", "old.weapon"));
-    var originalFile = Directory.GetFiles(v2Directory, "*.json").Single();
-    var originalBytes = File.ReadAllBytes(originalFile);
-    var v2Store = new WardrobeSaveStore(v2Directory);
-    var migrated = v2Store.Read(key);
-    Require(migrated.MigratedLegacy && migrated.Error == null && migrated.Record!.Choices.Requested[WardrobeCategory.Cloak]?.LegacyBundleId == "old.outfit",
-        "V1 full-bundle intent was lost during sidecar read");
-    Require(File.ReadAllBytes(originalFile).SequenceEqual(originalBytes), "Reading migrated legacy sidecar rewrote it");
-    var mutable = migrated.Record!.Choices.Requested.ToDictionary(pair => pair.Key, pair => pair.Value);
-    var state = new WardrobeSelectionState(mutable, new(new[] { WardrobeCategory.Cloak },
-        new[] { new WardrobeVisibilityOverride(WardrobeCategory.Gauntlet, "old.outfit") }));
-    var frozen = WardrobeSaveStore.Freeze(state);
-    var wardrobeTransactions = new AppearanceSaveTransactions<WardrobeSelectionState>();
-    wardrobeTransactions.Begin(1, key, frozen, AppearanceSavePhase.Prepare);
-    mutable[WardrobeCategory.Body] = new("new.body", null);
-    Require(wardrobeTransactions.Complete(1, true) == null, "Preparation published wardrobe record");
-    wardrobeTransactions.Begin(2, key, WardrobeSaveStore.Freeze(state), AppearanceSavePhase.WritePrepared);
-    var committed = wardrobeTransactions.Complete(2, true)!;
-    Require(committed.Choices.Requested[WardrobeCategory.Body]?.LegacyBundleId == "old.outfit", "Prepared snapshot followed later UI edits");
-    v2Store.Write(key, committed.Choices);
-    var reread = v2Store.Read(key);
-    Require(!reread.MigratedLegacy && reread.Error == null && reread.Record!.Choices.Visibility.Disabled.Contains(WardrobeCategory.Cloak) &&
-        reread.Record.Choices.Visibility.ConfirmedOverrides.Single().DeclaringId == "old.outfit", "V2 visibility/confirmation round trip failed");
-    Require(File.ReadAllBytes(Directory.GetFiles(v2Directory, "*.bak").Single()).SequenceEqual(originalBytes), "Migration backup differs from v1 original");
-    var validV2 = File.ReadAllBytes(originalFile);
-    try { v2Store.Write(key, state with { Requested = new Dictionary<WardrobeCategory, WardrobeSelection?>() });
+    var v4Directory = Path.Combine(temporary, "v4");
+    var wardrobeStore = new WardrobeSaveStore(v4Directory);
+    Require(wardrobeStore.Read(key) == new WardrobeSaveRead(null, null), "Missing wardrobe sidecar must not invent a selection");
+    var wardrobeState = new WardrobeSelectionState(new Dictionary<WardrobeCategory, string?> {
+            [WardrobeCategory.Body] = "new.body", [WardrobeCategory.Cloak] = null,
+            [WardrobeCategory.Gauntlet] = "new.glove", [WardrobeCategory.Weapon] = null,
+            [WardrobeCategory.Transform] = "oni.custom" },
+        new(new[] { WardrobeCategory.Cloak },
+            new[] { new WardrobeVisibilityOverride(WardrobeCategory.Gauntlet, "new.body") }));
+    wardrobeStore.Write(key, wardrobeState);
+    var wardrobeRead = wardrobeStore.Read(key);
+    Require(wardrobeRead.Error == null && wardrobeRead.Record != null &&
+        wardrobeRead.Record.Choices.Requested[WardrobeCategory.Transform] == "oni.custom" &&
+        wardrobeRead.Record.Choices.Visibility.ConfirmedOverrides.Single().DeclaringId == "new.body",
+        "Schema 4 sidecar round trip lost the transform intent or visibility grants");
+    foreach (var other in new[] { key with { UserIndex = 1 }, key with { Slot = 1 }, key with { UniqueId = 2 } })
+        Require(wardrobeStore.Read(other).Record == null, "Wardrobe choices leaked across save identities");
+    string wardrobeFile = Directory.GetFiles(v4Directory, "*.json").Single();
+    var v4Bytes = File.ReadAllBytes(wardrobeFile);
+    File.WriteAllText(wardrobeFile, JsonSerializer.Serialize(new WardrobeSaveRecord(3, key, wardrobeState)));
+    var legacyRead = wardrobeStore.Read(key);
+    Require(legacyRead.Record == null && legacyRead.LegacyVersion == 3 && legacyRead.Error != null,
+        "An older wardrobe record must be reported for a rebuild, never read as the new format");
+    Require(File.ReadAllText(wardrobeFile).Contains("\"SchemaVersion\":3"), "Reading a legacy record rewrote it");
+    wardrobeStore.Write(key, wardrobeState);
+    var backups = Directory.GetFiles(v4Directory, "*.legacy-v3.*.bak");
+    Require(backups.Length == 1 && new FileInfo(backups[0]).Length > 0 && File.ReadAllText(backups[0]).Contains("\"SchemaVersion\":3"),
+        "Legacy record was not preserved before the schema 4 write");
+    Require(wardrobeStore.Read(key).Error == null, "Schema 4 write after the legacy backup failed");
+    File.WriteAllText(wardrobeFile, "{");
+    Require(wardrobeStore.Read(key) is { Record: null, Error: not null, LegacyVersion: null },
+        "Corruption was silently treated as no selection");
+    try { wardrobeStore.Write(key, wardrobeState); throw new Exception("Write over a corrupt sidecar was accepted"); }
+    catch (InvalidDataException) { }
+    File.WriteAllBytes(wardrobeFile, v4Bytes);
+    try { wardrobeStore.Write(key, wardrobeState with { Requested = new Dictionary<WardrobeCategory, string?>() });
         throw new Exception("Incomplete wardrobe state accepted"); } catch (FormatException) { }
-    Require(File.ReadAllBytes(originalFile).SequenceEqual(validV2), "Invalid write damaged existing v2 record");
-    File.WriteAllText(originalFile, JsonSerializer.Serialize(new WardrobeSaveRecord(2, key with { Slot = 9 }, frozen)));
-    Require(v2Store.Read(key).Error != null, "Wrong embedded v2 save identity accepted");
-    Require(Directory.GetFiles(v2Directory, "*.tmp").Length == 0, "V2 publication left temporary files");
-    Console.WriteLine("PASS: v2 sidecar round trip, read-only legacy migration/backup, immutable prepared snapshot and invalid-write preservation");
+    Require(File.ReadAllBytes(wardrobeFile).SequenceEqual(v4Bytes), "Invalid write damaged the existing schema 4 record");
+    File.WriteAllText(wardrobeFile, "{\"SchemaVersion\":4,\"Key\":{\"UserIndex\":0,\"Slot\":9,\"UniqueId\":1},\"Choices\":null}");
+    Require(wardrobeStore.Read(key).Error != null, "Wrong embedded save identity accepted");
+    File.WriteAllBytes(wardrobeFile, v4Bytes);
+    var wardrobeTransactions = new AppearanceSaveTransactions<WardrobeSelectionState>();
+    wardrobeTransactions.Begin(1, key, WardrobeSaveStore.Freeze(wardrobeState), AppearanceSavePhase.Prepare);
+    var changedState = wardrobeState with { Requested = new Dictionary<WardrobeCategory, string?>(wardrobeState.Requested) {
+        [WardrobeCategory.Body] = "changed.body" } };
+    Require(wardrobeTransactions.Complete(1, true) == null, "Preparation published a wardrobe record");
+    wardrobeTransactions.Begin(2, key, WardrobeSaveStore.Freeze(changedState), AppearanceSavePhase.WritePrepared);
+    var committed = wardrobeTransactions.Complete(2, true)!;
+    Require(committed.Choices.Requested[WardrobeCategory.Body] == "new.body", "Prepared snapshot followed later UI edits");
+    wardrobeStore.Write(key, committed.Choices);
+    Require(wardrobeStore.Read(key).Record!.Choices.Requested[WardrobeCategory.Body] == "new.body", "Committed snapshot did not save");
+    Require(Directory.GetFiles(v4Directory, "*.tmp").Length == 0, "Schema 4 publication left temporary files");
+    Console.WriteLine("PASS: schema 4 sidecar round trip, legacy rebuild reporting/backup, immutable prepared snapshot and invalid-write preservation");
 }
 finally
 {
@@ -227,30 +246,32 @@ finally
 Console.WriteLine("PASS: sidecar round-trip, independent cancellation, key isolation, corrupt/schema/identity rejection");
 WardrobeCompositionTests.Run();
 WardrobeRegistryTests.Run();
+WardrobeTransformTests.Run();
 WardrobeSkeletonTests.Run();
 WardrobeEquipTests.Run();
-var v2 = """{"schemaVersion":2,"id":"test.body","name":"合并模型","category":"body","parts":[{"part":"BODY","catalog":"mods/test/catalog.user","prefab":"mods/test/body.pfb"}],"rules":{"hideParts":["HEAD","HAIR"],"incompatibleCategories":["cloak","gauntlet"]}}""";
-var parsedV2 = WardrobeManifest.Parse(v2, "test");
-Require(parsedV2.Rules.HiddenParts.Count == 2 && parsedV2.Rules.IncompatibleCategories.Count == 2,
-    "V2 lost declarations");
-foreach (var invalid in new[] { v2.Replace("hideParts", "hidePart"), v2.Replace("\"HEAD\",\"HAIR\"", "\"BODY\""),
-    v2.Replace("body.pfb", "../body.pfb"), v2.Replace("\"category\":\"body\"", "\"category\":\"cloak\""),
-    v2.Replace("\"schemaVersion\":2", "\"schemaVersion\":2,\"schemaVersion\":2") })
+var v4 = """{"schemaVersion":4,"id":"test.body","name":"合并模型","category":"body","parts":[{"part":"BODY","catalog":"mods/test/catalog.user","prefab":"mods/test/body.pfb"}],"rules":{"hideParts":["HEAD","HAIR"],"incompatibleCategories":["cloak","gauntlet"]}}""";
+var parsedV4 = WardrobeManifest.Parse(v4, "test");
+Require(parsedV4.Rules.HiddenParts.Count == 2 && parsedV4.Rules.IncompatibleCategories.Count == 2,
+    "Schema 4 lost declarations");
+foreach (var invalid in new[] { v4.Replace("hideParts", "hidePart"), v4.Replace("\"HEAD\",\"HAIR\"", "\"BODY\""),
+    v4.Replace("body.pfb", "../body.pfb"), v4.Replace("\"category\":\"body\"", "\"category\":\"cloak\""),
+    v4.Replace("\"schemaVersion\":4", "\"schemaVersion\":4,\"schemaVersion\":4"),
+    v4.Replace("\"rules\":{", "\"rules\":{\"transform\":\"keep\",") })
 {
     bool rejected = false;
     try { WardrobeManifest.Parse(invalid, "invalid"); }
     catch (Exception e) when (e is FormatException or ArgumentException) { rejected = true; }
-    Require(rejected, "Unsafe v2 manifest accepted");
+    Require(rejected, "Unsafe schema 4 manifest accepted");
 }
-Console.WriteLine("PASS: v2 declarations, rule typos, self-hide, path escape, category and duplicate field rejection");
+Console.WriteLine("PASS: schema 4 declarations, rule typos, self-hide, path escape, category, removed keep-rule field and duplicate field rejection");
 foreach (string path in args)
 {
     using var fixture = JsonDocument.Parse(File.ReadAllText(path));
-    if (fixture.RootElement.GetProperty("schemaVersion").GetInt32() is 2 or 3)
+    if (fixture.RootElement.GetProperty("schemaVersion").GetInt32() == WardrobeManifest.SchemaVersion)
     {
-        var actualV2 = WardrobeManifest.Parse(File.ReadAllText(path), path);
-        Require(actualV2.Parts.Count > 0, "V2 fixture contains no parts");
-        Console.WriteLine($"Parsed v2 fixture: {actualV2.Rules.Id}, {actualV2.Rules.Category}, {actualV2.Parts.Count} parts");
+        var actualV4 = WardrobeManifest.Parse(File.ReadAllText(path), path);
+        Require(actualV4.Parts.Count > 0, "Schema 4 fixture contains no roots or parts");
+        Console.WriteLine($"Parsed schema 4 fixture: {actualV4.Rules.Id}, {actualV4.Rules.Category}, {actualV4.Parts.Count} parts/roots");
         continue;
     }
     var actual = AppearanceRegistry.Parse(File.ReadAllText(path), path);

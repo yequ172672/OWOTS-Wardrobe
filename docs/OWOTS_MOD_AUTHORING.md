@@ -39,21 +39,24 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `schemaVersion` | 普通声明为 `2`；使用 `rules.equip` 时为 `3`，需要新版服装系统 |
+| `schemaVersion` | 当前为 `4`；旧版配置需要重新转换，运行时不再读取 |
 | `id` | 稳定标识（小写、点分，例如 `author.hat`） |
 | `name` / `description` / `author` | 展示信息 |
-| `category` | `body` / `cloak` / `gauntlet` / `weapon` |
-| `parts[]` | 每项 `{ part, catalog, prefab }`；一个服装条目可提供多个部位 |
-| `rules.hideParts` | 本条目要求隐藏的原生部位（例如身体条目隐藏 `CLOAK`）；不能隐藏自己提供的部位 |
-| `rules.incompatibleCategories` | 与哪些分类互斥 |
-| `rules.equip` | schema 3 身体条目的默认配件：`{"cloak":"配件ID","gauntlet":"配件ID"}`，两项均可省略 |
+| `category` | `body` / `cloak` / `gauntlet` / `weapon` / `transform` |
+| `parts[]` | 常态分类：每项 `{ part, catalog, prefab }`；一个服装条目可提供多个部位 |
+| `roots[]` | 仅 `transform` 分类：每项 `{ root, prefab }`，可选 `catalog`；`root` 为 `ONI_BODY` 或 `ONI_HEAD` |
+| `rules.hideParts` | 常态：要隐藏的原生部位（例如身体条目隐藏 `CLOAK`）；`transform`：鬼化域内要隐藏的目标（`HEAD` / `HAIR`）；不能隐藏自己提供的部位 |
+| `rules.incompatibleCategories` | 与哪些分类互斥（`transform` 条目不可声明） |
+| `rules.equip` | 身体条目的默认配件：`{"cloak":"配件ID","gauntlet":"配件ID"}`，两项均可省略 |
 | `icon` | 可选，相对 manifest 的 PNG/JPEG/BMP/TGA |
 | `skeleton` | 可选，同拓扑独立骨架声明（见下） |
 
 ### 5. 部位与分类
 
-- 四分类：**身体 / 披风 / 护手 / 武器**。
+- 四分类：**身体 / 披风 / 护手 / 武器**；第五分类：**变身**（协议名 `transform`）。
 - 部位名：`BODY`、`BODY_SUB`、`HEAD`、`HAIR`、`CLOAK`、`GAUNTLET`、`WEAPON`、`SHEATH`、`WEAPON_SUB`、`SHEATH_SUB`、`BOW`。
+- 变身条目使用 `roots` 而不是 `parts`：`ONI_BODY` 对应 `onibody.pfb`，`ONI_HEAD` 对应 `onihead.pfb`（头部与头发都在后者内部）。可只提供其中一个根，未修改的部分引用原版；`rules.hideParts` 只在该域内生效，可隐藏 `HEAD` / `HAIR`，不会影响常态外观。
+- 变身外观在鬼化前选定，单次鬼化期间锁定；中途修改只对下一次生效。变身资源、触发与持续时间由游戏管理。
 - 你的 MOD 提供哪些部位由**资源依赖图**决定：转换器会跟随你的 PFB 图，直到触达 MOD 自己的网格/材质；不相关或未消费的输入会被报告而不是静默丢弃。
 - 一个条目可以提供同一分类的多个部位（例如 `BODY` + `HEAD` + `HAIR`）；转换器根据资源归属自动分组。可见披风、护手分别注册，身体通过 `rules.equip` 声明默认穿戴。
 - 玩家后来手选的配件覆盖默认穿戴。取消/切换身体仅撤回尚未手改的默认配件，恢复其之前选择；重新明确穿戴身体会重新应用默认配件。隐藏和互斥规则仍然有效。
@@ -132,21 +135,24 @@ Extract the ZIP and merge its `natives` and `reframework` folders into the game 
 
 | Field | Meaning |
 | --- | --- |
-| `schemaVersion` | `2` for ordinary declarations; `3` when using `rules.equip`, requiring the updated wardrobe |
+| `schemaVersion` | Currently `4`; older declarations must be re-converted and are no longer read |
 | `id` | Stable id (lowercase, dotted, e.g. `author.hat`) |
 | `name` / `description` / `author` | Display metadata |
-| `category` | `body` / `cloak` / `gauntlet` / `weapon` |
-| `parts[]` | Each `{ part, catalog, prefab }`; one outfit entry may provide several parts |
-| `rules.hideParts` | Native parts this entry hides (e.g. a body hides `CLOAK`); never its own provided parts |
-| `rules.incompatibleCategories` | Categories this entry conflicts with |
-| `rules.equip` | Schema 3 body defaults: `{"cloak":"entry.id","gauntlet":"entry.id"}`, either optional |
+| `category` | `body` / `cloak` / `gauntlet` / `weapon` / `transform` |
+| `parts[]` | Normal categories: each `{ part, catalog, prefab }`; one outfit entry may provide several parts |
+| `roots[]` | `transform` only: each `{ root, prefab }` with an optional `catalog`; `root` is `ONI_BODY` or `ONI_HEAD` |
+| `rules.hideParts` | Normal: native parts this entry hides (e.g. a body hides `CLOAK`); `transform`: in-domain targets (`HEAD` / `HAIR`); never its own provided parts |
+| `rules.incompatibleCategories` | Categories this entry conflicts with (not allowed on `transform`) |
+| `rules.equip` | Body defaults: `{"cloak":"entry.id","gauntlet":"entry.id"}`, either optional |
 | `icon` | Optional PNG/JPEG/BMP/TGA relative to the manifest |
 | `skeleton` | Optional same-topology standalone rig declaration (below) |
 
 ### 5. Parts and categories
 
-- Four categories: **Body / Cloak / Gauntlet / Weapon**.
+- Four normal categories: **Body / Cloak / Gauntlet / Weapon**; the fifth category is **Transform** (protocol name `transform`).
 - Part names: `BODY`, `BODY_SUB`, `HEAD`, `HAIR`, `CLOAK`, `GAUNTLET`, `WEAPON`, `SHEATH`, `WEAPON_SUB`, `SHEATH_SUB`, `BOW`.
+- Transform entries declare `roots` instead of `parts`: `ONI_BODY` is `onibody.pfb` and `ONI_HEAD` is `onihead.pfb` (it contains both the head and hair meshes). Either root may be omitted; unmodified content references the original. `rules.hideParts` applies inside that domain only (`HEAD` / `HAIR`) and never affects the normal-state appearance.
+- The transform appearance is selected before a transformation and frozen for its duration; mid-transformation changes apply to the next one. Resources, triggering and duration stay under game control.
 - Which parts your MOD provides is decided by the **dependency graph**: the converter follows your PFB graph until it reaches MOD-owned meshes/materials; unrelated or unconsumed inputs are reported, never silently dropped.
 - One entry can provide several parts in the same category (`BODY` + `HEAD` + `HAIR`). The converter groups them by resource ownership. Visible cloaks and gauntlets remain separately registered; body `rules.equip` selects their defaults.
 - Later manual accessory choices override those defaults. Cancelling/changing the body restores only untouched defaults. Explicitly wearing the body again reapplies its defaults; hiding and conflict rules still apply.
